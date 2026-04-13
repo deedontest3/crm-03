@@ -5,6 +5,7 @@ import { GenericCSVProcessor } from './import-export/genericCSVProcessor';
 import { GenericCSVExporter } from './import-export/genericCSVExporter';
 import { getExportFilename } from '@/utils/exportUtils';
 import { fetchAllRecords } from '@/utils/supabasePagination';
+import { useSecurityAudit } from '@/hooks/useSecurityAudit';
 
 // Accounts field order for export
 const ACCOUNTS_EXPORT_FIELDS = [
@@ -17,6 +18,7 @@ const ACCOUNTS_EXPORT_FIELDS = [
 export const useSimpleAccountsImportExport = (onRefresh: () => void) => {
   const { user } = useAuth();
   const [isImporting, setIsImporting] = useState(false);
+  const { logSecurityEvent } = useSecurityAudit();
 
   const handleImport = async (file: File) => {
     console.log('=== ACCOUNTS IMPORT STARTED ===');
@@ -124,12 +126,18 @@ export const useSimpleAccountsImportExport = (onRefresh: () => void) => {
       
       // Show appropriate toast based on result
       if (successCount > 0 || updateCount > 0) {
+        logSecurityEvent('DATA_IMPORT', 'accounts', undefined, {
+          file_name: file.name,
+          new_records: successCount,
+          updated_records: updateCount,
+          errors: errorCount
+        });
+        
         toast({
           title: "Import Successful",
           description: message,
         });
         
-        // Refresh the table
         console.log('Refreshing accounts table...');
         onRefresh();
         
@@ -197,6 +205,10 @@ export const useSimpleAccountsImportExport = (onRefresh: () => void) => {
       const exporter = new GenericCSVExporter();
       await exporter.exportToCSV(accounts, filename, ACCOUNTS_EXPORT_FIELDS);
 
+      logSecurityEvent('DATA_EXPORT', 'accounts', undefined, {
+        record_count: accounts.length
+      });
+      
       toast({
         title: "Export Successful",
         description: `${accounts.length} accounts exported`,

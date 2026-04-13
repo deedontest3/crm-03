@@ -3,10 +3,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
+import { useCRUDAudit } from '@/hooks/useCRUDAudit';
 
 export type ActionItemPriority = 'Low' | 'Medium' | 'High';
 export type ActionItemStatus = 'Open' | 'In Progress' | 'Completed' | 'Cancelled';
-export type ModuleType = 'deals' | 'leads' | 'contacts';
+export type ModuleType = 'accounts' | 'contacts' | 'deals' | 'campaigns';
 
 export interface ActionItem {
   id: string;
@@ -65,13 +66,13 @@ export function useActionItems(initialFilters?: Partial<ActionItemFilters>) {
     ...defaultFilters,
     ...initialFilters,
   });
+  const { logCreate, logUpdate, logDelete, logBulkUpdate, logBulkDelete } = useCRUDAudit();
 
   // Fetch action items
   const {
     data: actionItems = [],
     isLoading,
     error,
-    refetch,
   } = useQuery({
     queryKey: ['action_items', filters],
     queryFn: async () => {
@@ -100,12 +101,10 @@ export function useActionItems(initialFilters?: Partial<ActionItemFilters>) {
       
       // Filter by archived/completed status
       if (!filters.showArchived) {
-        // Show non-completed, non-archived items
         query = query
           .is('archived_at', null)
           .neq('status', 'Completed');
       } else {
-        // Show completed or archived items
         query = query.or('status.eq.Completed,archived_at.not.is.null');
       }
 
@@ -116,7 +115,14 @@ export function useActionItems(initialFilters?: Partial<ActionItemFilters>) {
     enabled: !!user,
   });
 
-  // Create action item
+  // Helper: get all matching query keys for optimistic updates
+  const getActionItemsQueryKeys = () => {
+    return queryClient.getQueryCache()
+      .findAll({ queryKey: ['action_items'] })
+      .map(q => q.queryKey as readonly unknown[]);
+  };
+
+  // Create action item — with optimistic updates
   const createMutation = useMutation({
     mutationFn: async (input: CreateActionItemInput) => {
       if (!user) throw new Error('User not authenticated');
@@ -133,17 +139,70 @@ export function useActionItems(initialFilters?: Partial<ActionItemFilters>) {
       if (error) throw error;
       return data;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['action_items'] });
-      toast.success('Action item created successfully');
+    onMutate: async (input) => {
+      await queryClient.cancelQueries({ queryKey: ['action_items'] });
+
+      const tempId = `temp-${Date.now()}`;
+      const optimisticItem: ActionItem = {
+        id: tempId,
+        module_type: input.module_type,
+        module_id: input.module_id ?? null,
+        title: input.title,
+        description: input.description ?? null,
+        assigned_to: input.assigned_to ?? null,
+        due_date: input.due_date ?? null,
+        due_time: input.due_time ?? null,
+        priority: input.priority ?? 'Medium',
+        status: input.status ?? 'Open',
+        created_by: user!.id,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      const queryKeys = getActionItemsQueryKeys();
+      const previousSnapshots: { queryKey: readonly unknown[]; data: unknown }[] = [];
+
+      for (const queryKey of queryKeys) {
+        const data = queryClient.getQueryData(queryKey);
+        previousSnapshots.push({ queryKey, data });
+
+        queryClient.setQueryData(queryKey, (old: ActionItem[] | undefined) => {
+          if (!old) return [optimisticItem];
+          return [optimisticItem, ...old];
+        });
+      }
+
+      return { previousSnapshots, tempId };
     },
-    onError: (error) => {
+    onError: (error, _input, context) => {
       console.error('Error creating action item:', error);
       toast.error('Failed to create action item');
+      if (context?.previousSnapshots) {
+        for (const { queryKey, data } of context.previousSnapshots) {
+          queryClient.setQueryData(queryKey, data);
+        }
+      }
+    },
+    onSuccess: (data) => {
+      toast.success('Action item created successfully');
+      if (data) {
+        logCreate('action_items', data.id, {
+          title: data.title,
+          module_type: data.module_type,
+          module_id: data.module_id,
+          assigned_to: data.assigned_to,
+          priority: data.priority,
+          status: data.status,
+          due_date: data.due_date,
+        });
+      }
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['action_items'] });
     },
   });
 
-  // Update action item
+  // Update action item — with optimistic updates
   const updateMutation = useMutation({
     mutationFn: async ({ id, ...input }: UpdateActionItemInput) => {
       const { data, error } = await supabase
@@ -156,17 +215,70 @@ export function useActionItems(initialFilters?: Partial<ActionItemFilters>) {
       if (error) throw error;
       return data;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['action_items'] });
-      toast.success('Action item updated successfully');
+    onMutate: async (updatedItem) => {
+      await queryClient.cancelQueries({ queryKey: ['action_items'] });
+
+      const queryKeys = getActionItemsQueryKeys();
+      const previousSnapshots: { queryKey: readonly unknown[]; data: unknown }[] = [];
+      // Capture old data for audit
+      let oldItem: ActionItem | undefined;
+
+      for (const queryKey of queryKeys) {
+        const data = queryClient.getQueryData(queryKey);
+        previousSnapshots.push({ queryKey, data });
+
+        if (!oldItem && Array.isArray(data)) {
+          oldItem = (data as ActionItem[]).find(item => item.id === updatedItem.id);
+        }
+
+        queryClient.setQueryData(queryKey, (old: ActionItem[] | undefined) => {
+          if (!old) return old;
+          return old.map(item =>
+            item.id === updatedItem.id
+              ? { ...item, ...updatedItem, updated_at: new Date().toISOString() }
+              : item
+          );
+        });
+      }
+
+      // If old item not found in cache, fetch from DB (DB still has old data at onMutate time)
+      if (!oldItem) {
+        try {
+          const { data } = await supabase
+            .from('action_items')
+            .select('*')
+            .eq('id', updatedItem.id)
+            .single();
+          if (data) oldItem = data as ActionItem;
+        } catch { /* proceed without old data */ }
+      }
+
+      return { previousSnapshots, oldItem };
     },
-    onError: (error) => {
+    onError: (error: any, _updatedItem, context) => {
       console.error('Error updating action item:', error);
-      toast.error('Failed to update action item');
+      const message = error?.message || error?.details || 'Failed to update action item';
+      toast.error(message);
+      // Rollback all caches
+      if (context?.previousSnapshots) {
+        for (const { queryKey, data } of context.previousSnapshots) {
+          queryClient.setQueryData(queryKey, data);
+        }
+      }
+    },
+    onSuccess: (data, variables, context) => {
+      toast.success('Action item updated successfully');
+      if (data) {
+        const { id, ...updates } = variables;
+        logUpdate('action_items', id, updates, context?.oldItem || {});
+      }
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['action_items'] });
     },
   });
 
-  // Delete action item
+  // Delete action item — with optimistic updates
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
       const { error } = await supabase
@@ -176,17 +288,48 @@ export function useActionItems(initialFilters?: Partial<ActionItemFilters>) {
 
       if (error) throw error;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['action_items'] });
-      toast.success('Action item deleted successfully');
+    onMutate: async (deletedId) => {
+      await queryClient.cancelQueries({ queryKey: ['action_items'] });
+
+      const queryKeys = getActionItemsQueryKeys();
+      const previousSnapshots: { queryKey: readonly unknown[]; data: unknown }[] = [];
+      let deletedItem: ActionItem | undefined;
+
+      for (const queryKey of queryKeys) {
+        const data = queryClient.getQueryData(queryKey);
+        previousSnapshots.push({ queryKey, data });
+
+        if (!deletedItem && Array.isArray(data)) {
+          deletedItem = (data as ActionItem[]).find(item => item.id === deletedId);
+        }
+
+        queryClient.setQueryData(queryKey, (old: ActionItem[] | undefined) => {
+          if (!old) return old;
+          return old.filter(item => item.id !== deletedId);
+        });
+      }
+
+      return { previousSnapshots, deletedItem };
     },
-    onError: (error) => {
+    onError: (error, _deletedId, context) => {
       console.error('Error deleting action item:', error);
       toast.error('Failed to delete action item');
+      if (context?.previousSnapshots) {
+        for (const { queryKey, data } of context.previousSnapshots) {
+          queryClient.setQueryData(queryKey, data);
+        }
+      }
+    },
+    onSuccess: (_data, deletedId, context) => {
+      toast.success('Action item deleted successfully');
+      logDelete('action_items', deletedId, context?.deletedItem || {});
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['action_items'] });
     },
   });
 
-  // Bulk update status
+  // Bulk update status — with optimistic updates
   const bulkUpdateStatusMutation = useMutation({
     mutationFn: async ({ ids, status }: { ids: string[]; status: ActionItemStatus }) => {
       const { error } = await supabase
@@ -196,17 +339,89 @@ export function useActionItems(initialFilters?: Partial<ActionItemFilters>) {
 
       if (error) throw error;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['action_items'] });
-      toast.success('Action items updated successfully');
+    onMutate: async ({ ids, status }) => {
+      await queryClient.cancelQueries({ queryKey: ['action_items'] });
+
+      const queryKeys = getActionItemsQueryKeys();
+      const previousSnapshots: { queryKey: readonly unknown[]; data: unknown }[] = [];
+      let oldItems: ActionItem[] = [];
+
+      for (const queryKey of queryKeys) {
+        const data = queryClient.getQueryData(queryKey);
+        previousSnapshots.push({ queryKey, data });
+
+        // Capture old items for audit logging (only once)
+        if (oldItems.length === 0 && Array.isArray(data)) {
+          const idSet = new Set(ids);
+          oldItems = (data as ActionItem[]).filter(item => idSet.has(item.id));
+        }
+
+        queryClient.setQueryData(queryKey, (old: ActionItem[] | undefined) => {
+          if (!old) return old;
+          const idSet = new Set(ids);
+          return old.map(item =>
+            idSet.has(item.id)
+              ? { ...item, status, updated_at: new Date().toISOString() }
+              : item
+          );
+        });
+      }
+
+      // If old items not found in cache, fetch from DB (DB still has old data at onMutate time)
+      if (oldItems.length === 0) {
+        try {
+          const { data } = await supabase
+            .from('action_items')
+            .select('*')
+            .in('id', ids);
+          if (data) oldItems = data as ActionItem[];
+        } catch { /* proceed without old data */ }
+      }
+
+      return { previousSnapshots, oldItems };
     },
-    onError: (error) => {
+    onError: (error, _vars, context) => {
       console.error('Error updating action items:', error);
       toast.error('Failed to update action items');
+      if (context?.previousSnapshots) {
+        for (const { queryKey, data } of context.previousSnapshots) {
+          queryClient.setQueryData(queryKey, data);
+        }
+      }
+    },
+    onSuccess: async (_data, variables, context) => {
+      toast.success('Action items updated successfully');
+      const oldItems = context?.oldItems || [];
+      
+      // Single item: log as regular UPDATE with field-level changes
+      if (variables.ids.length === 1) {
+        const itemId = variables.ids[0];
+        const item = oldItems[0];
+        
+        const oldStatus = item?.status || 'Open';
+        const itemTitle = item?.title || 'Untitled Action Item';
+        logUpdate('action_items', itemId, 
+          { status: variables.status },
+          { status: oldStatus, title: itemTitle, module_type: item?.module_type || 'action_items' }
+        );
+      } else {
+        // Multiple items: log as BULK_UPDATE with titles
+        const itemTitles = oldItems.map(i => i.title).filter(Boolean);
+        
+        logBulkUpdate('action_items', variables.ids.length, {
+          status: variables.status,
+          record_ids: variables.ids.slice(0, 10),
+          item_titles: itemTitles.slice(0, 10),
+          module: 'action_items',
+        });
+      }
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['action_items'] });
     },
   });
 
-  // Bulk delete
+  // Bulk delete — with optimistic updates
   const bulkDeleteMutation = useMutation({
     mutationFn: async (ids: string[]) => {
       const { error } = await supabase
@@ -216,13 +431,40 @@ export function useActionItems(initialFilters?: Partial<ActionItemFilters>) {
 
       if (error) throw error;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['action_items'] });
-      toast.success('Action items deleted successfully');
+    onMutate: async (deletedIds) => {
+      await queryClient.cancelQueries({ queryKey: ['action_items'] });
+
+      const queryKeys = getActionItemsQueryKeys();
+      const previousSnapshots: { queryKey: readonly unknown[]; data: unknown }[] = [];
+
+      for (const queryKey of queryKeys) {
+        const data = queryClient.getQueryData(queryKey);
+        previousSnapshots.push({ queryKey, data });
+
+        queryClient.setQueryData(queryKey, (old: ActionItem[] | undefined) => {
+          if (!old) return old;
+          const idSet = new Set(deletedIds);
+          return old.filter(item => !idSet.has(item.id));
+        });
+      }
+
+      return { previousSnapshots };
     },
-    onError: (error) => {
+    onError: (error, _ids, context) => {
       console.error('Error deleting action items:', error);
       toast.error('Failed to delete action items');
+      if (context?.previousSnapshots) {
+        for (const { queryKey, data } of context.previousSnapshots) {
+          queryClient.setQueryData(queryKey, data);
+        }
+      }
+    },
+    onSuccess: (_data, deletedIds) => {
+      toast.success('Action items deleted successfully');
+      logBulkDelete('action_items', deletedIds.length, deletedIds);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['action_items'] });
     },
   });
 
@@ -236,7 +478,7 @@ export function useActionItems(initialFilters?: Partial<ActionItemFilters>) {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'action_items' },
         () => {
-          refetch();
+          queryClient.invalidateQueries({ queryKey: ['action_items'] });
         }
       )
       .subscribe();
@@ -244,7 +486,7 @@ export function useActionItems(initialFilters?: Partial<ActionItemFilters>) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [user, refetch]);
+  }, [user, queryClient]);
 
   return {
     actionItems,
@@ -253,7 +495,6 @@ export function useActionItems(initialFilters?: Partial<ActionItemFilters>) {
     filters,
     setFilters,
     updateFilter: (key: keyof ActionItemFilters, value: string | boolean) => {
-      // Handle showArchived boolean conversion
       if (key === 'showArchived') {
         const boolValue = typeof value === 'boolean' ? value : value === 'true';
         setFilters((prev) => ({ ...prev, [key]: boolValue }));

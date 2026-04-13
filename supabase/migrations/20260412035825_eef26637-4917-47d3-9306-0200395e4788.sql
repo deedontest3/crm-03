@@ -1,0 +1,1 @@
+UPDATE campaign_communications SET communication_type = 'Call' WHERE communication_type = 'Phone';

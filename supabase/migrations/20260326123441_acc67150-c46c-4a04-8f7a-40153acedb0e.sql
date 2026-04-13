@@ -1,0 +1,1 @@
+UPDATE notification_preferences SET last_reminder_sent_at = NULL WHERE user_id = '7137ca7a-2649-493b-bae8-f95d591fbb95';

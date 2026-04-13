@@ -1,6 +1,7 @@
 import YearlyRevenueSummary from "@/components/YearlyRevenueSummary";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { NotificationBell } from "@/components/NotificationBell";
+import { CampaignDashboardWidget } from "@/components/dashboard/CampaignDashboardWidget";
 import { useState } from "react";
 
 const availableYears = [2023, 2024, 2025, 2026];
@@ -36,9 +37,9 @@ const Dashboard = () => {
         {/* Yearly Revenue Summary Section */}
         <YearlyRevenueSummary selectedYear={selectedYear} onYearChange={setSelectedYear} hideHeader />
 
-        {/* Placeholder for additional dashboard content */}
-        <div className="mt-8 space-y-6">
-          {/* Add your quarterly breakdown or charts here */}
+        {/* Campaign Dashboard Widget */}
+        <div className="mt-8">
+          <CampaignDashboardWidget />
         </div>
       </div>
     </div>;

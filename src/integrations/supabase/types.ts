@@ -215,6 +215,451 @@ export type Database = {
         }
         Relationships: []
       }
+      campaign_accounts: {
+        Row: {
+          account_id: string
+          campaign_id: string
+          created_at: string | null
+          created_by: string | null
+          id: string
+          status: string | null
+        }
+        Insert: {
+          account_id: string
+          campaign_id: string
+          created_at?: string | null
+          created_by?: string | null
+          id?: string
+          status?: string | null
+        }
+        Update: {
+          account_id?: string
+          campaign_id?: string
+          created_at?: string | null
+          created_by?: string | null
+          id?: string
+          status?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "campaign_accounts_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "campaign_accounts_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "campaigns"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      campaign_communications: {
+        Row: {
+          account_id: string | null
+          body: string | null
+          call_outcome: string | null
+          campaign_id: string
+          communication_date: string | null
+          communication_type: string
+          contact_id: string | null
+          created_at: string | null
+          created_by: string | null
+          email_status: string | null
+          email_type: string | null
+          id: string
+          linkedin_status: string | null
+          notes: string | null
+          outcome: string | null
+          owner: string | null
+          subject: string | null
+        }
+        Insert: {
+          account_id?: string | null
+          body?: string | null
+          call_outcome?: string | null
+          campaign_id: string
+          communication_date?: string | null
+          communication_type: string
+          contact_id?: string | null
+          created_at?: string | null
+          created_by?: string | null
+          email_status?: string | null
+          email_type?: string | null
+          id?: string
+          linkedin_status?: string | null
+          notes?: string | null
+          outcome?: string | null
+          owner?: string | null
+          subject?: string | null
+        }
+        Update: {
+          account_id?: string | null
+          body?: string | null
+          call_outcome?: string | null
+          campaign_id?: string
+          communication_date?: string | null
+          communication_type?: string
+          contact_id?: string | null
+          created_at?: string | null
+          created_by?: string | null
+          email_status?: string | null
+          email_type?: string | null
+          id?: string
+          linkedin_status?: string | null
+          notes?: string | null
+          outcome?: string | null
+          owner?: string | null
+          subject?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "campaign_communications_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "campaign_communications_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "campaigns"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "campaign_communications_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      campaign_contacts: {
+        Row: {
+          account_id: string | null
+          campaign_id: string
+          contact_id: string
+          created_at: string | null
+          created_by: string | null
+          id: string
+          linkedin_status: string | null
+          stage: string | null
+        }
+        Insert: {
+          account_id?: string | null
+          campaign_id: string
+          contact_id: string
+          created_at?: string | null
+          created_by?: string | null
+          id?: string
+          linkedin_status?: string | null
+          stage?: string | null
+        }
+        Update: {
+          account_id?: string | null
+          campaign_id?: string
+          contact_id?: string
+          created_at?: string | null
+          created_by?: string | null
+          id?: string
+          linkedin_status?: string | null
+          stage?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "campaign_contacts_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "campaign_contacts_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "campaigns"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "campaign_contacts_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      campaign_email_templates: {
+        Row: {
+          audience_segment: string | null
+          body: string | null
+          campaign_id: string | null
+          created_at: string | null
+          created_by: string | null
+          email_type: string | null
+          id: string
+          subject: string | null
+          template_name: string
+        }
+        Insert: {
+          audience_segment?: string | null
+          body?: string | null
+          campaign_id?: string | null
+          created_at?: string | null
+          created_by?: string | null
+          email_type?: string | null
+          id?: string
+          subject?: string | null
+          template_name: string
+        }
+        Update: {
+          audience_segment?: string | null
+          body?: string | null
+          campaign_id?: string | null
+          created_at?: string | null
+          created_by?: string | null
+          email_type?: string | null
+          id?: string
+          subject?: string | null
+          template_name?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "campaign_email_templates_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "campaigns"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      campaign_mart: {
+        Row: {
+          audience_done: boolean
+          campaign_id: string
+          created_at: string
+          message_done: boolean
+          region_done: boolean
+          timing_done: boolean
+          timing_notes: string | null
+          updated_at: string
+        }
+        Insert: {
+          audience_done?: boolean
+          campaign_id: string
+          created_at?: string
+          message_done?: boolean
+          region_done?: boolean
+          timing_done?: boolean
+          timing_notes?: string | null
+          updated_at?: string
+        }
+        Update: {
+          audience_done?: boolean
+          campaign_id?: string
+          created_at?: string
+          message_done?: boolean
+          region_done?: boolean
+          timing_done?: boolean
+          timing_notes?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "campaign_mart_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: true
+            referencedRelation: "campaigns"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      campaign_materials: {
+        Row: {
+          campaign_id: string
+          created_at: string | null
+          created_by: string | null
+          file_name: string
+          file_path: string
+          file_type: string | null
+          id: string
+        }
+        Insert: {
+          campaign_id: string
+          created_at?: string | null
+          created_by?: string | null
+          file_name: string
+          file_path: string
+          file_type?: string | null
+          id?: string
+        }
+        Update: {
+          campaign_id?: string
+          created_at?: string | null
+          created_by?: string | null
+          file_name?: string
+          file_path?: string
+          file_type?: string | null
+          id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "campaign_materials_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "campaigns"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      campaign_phone_scripts: {
+        Row: {
+          audience_segment: string | null
+          campaign_id: string | null
+          created_at: string | null
+          created_by: string | null
+          discovery_questions: string | null
+          id: string
+          key_talking_points: string | null
+          objection_handling: string | null
+          opening_script: string | null
+          script_name: string | null
+        }
+        Insert: {
+          audience_segment?: string | null
+          campaign_id?: string | null
+          created_at?: string | null
+          created_by?: string | null
+          discovery_questions?: string | null
+          id?: string
+          key_talking_points?: string | null
+          objection_handling?: string | null
+          opening_script?: string | null
+          script_name?: string | null
+        }
+        Update: {
+          audience_segment?: string | null
+          campaign_id?: string | null
+          created_at?: string | null
+          created_by?: string | null
+          discovery_questions?: string | null
+          id?: string
+          key_talking_points?: string | null
+          objection_handling?: string | null
+          opening_script?: string | null
+          script_name?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "campaign_phone_scripts_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "campaigns"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      campaign_settings: {
+        Row: {
+          id: string
+          setting_key: string
+          setting_value: string
+          updated_at: string | null
+          updated_by: string | null
+        }
+        Insert: {
+          id?: string
+          setting_key: string
+          setting_value: string
+          updated_at?: string | null
+          updated_by?: string | null
+        }
+        Update: {
+          id?: string
+          setting_key?: string
+          setting_value?: string
+          updated_at?: string | null
+          updated_by?: string | null
+        }
+        Relationships: []
+      }
+      campaigns: {
+        Row: {
+          archived_at: string | null
+          archived_by: string | null
+          campaign_name: string
+          campaign_type: string | null
+          country: string | null
+          created_at: string | null
+          created_by: string
+          description: string | null
+          end_date: string | null
+          goal: string | null
+          id: string
+          mart_complete: boolean
+          message_strategy: string | null
+          modified_at: string | null
+          modified_by: string | null
+          notes: string | null
+          owner: string | null
+          region: string | null
+          start_date: string | null
+          status: string | null
+          target_audience: string | null
+        }
+        Insert: {
+          archived_at?: string | null
+          archived_by?: string | null
+          campaign_name: string
+          campaign_type?: string | null
+          country?: string | null
+          created_at?: string | null
+          created_by: string
+          description?: string | null
+          end_date?: string | null
+          goal?: string | null
+          id?: string
+          mart_complete?: boolean
+          message_strategy?: string | null
+          modified_at?: string | null
+          modified_by?: string | null
+          notes?: string | null
+          owner?: string | null
+          region?: string | null
+          start_date?: string | null
+          status?: string | null
+          target_audience?: string | null
+        }
+        Update: {
+          archived_at?: string | null
+          archived_by?: string | null
+          campaign_name?: string
+          campaign_type?: string | null
+          country?: string | null
+          created_at?: string | null
+          created_by?: string
+          description?: string | null
+          end_date?: string | null
+          goal?: string | null
+          id?: string
+          mart_complete?: boolean
+          message_strategy?: string | null
+          modified_at?: string | null
+          modified_by?: string | null
+          notes?: string | null
+          owner?: string | null
+          region?: string | null
+          start_date?: string | null
+          status?: string | null
+          target_audience?: string | null
+        }
+        Relationships: []
+      }
       column_preferences: {
         Row: {
           column_widths: Json
@@ -431,6 +876,7 @@ export type Database = {
           budget: string | null
           budget_owner_contact_id: string | null
           business_value: string | null
+          campaign_id: string | null
           champion_contact_id: string | null
           closing: string | null
           created_at: string | null
@@ -472,6 +918,7 @@ export type Database = {
           rfq_received_date: string | null
           rfq_status: string | null
           signed_contract_date: string | null
+          source_campaign_contact_id: string | null
           stage: string
           start_date: string | null
           total_contract_value: number | null
@@ -484,6 +931,7 @@ export type Database = {
           budget?: string | null
           budget_owner_contact_id?: string | null
           business_value?: string | null
+          campaign_id?: string | null
           champion_contact_id?: string | null
           closing?: string | null
           created_at?: string | null
@@ -525,6 +973,7 @@ export type Database = {
           rfq_received_date?: string | null
           rfq_status?: string | null
           signed_contract_date?: string | null
+          source_campaign_contact_id?: string | null
           stage?: string
           start_date?: string | null
           total_contract_value?: number | null
@@ -537,6 +986,7 @@ export type Database = {
           budget?: string | null
           budget_owner_contact_id?: string | null
           business_value?: string | null
+          campaign_id?: string | null
           champion_contact_id?: string | null
           closing?: string | null
           created_at?: string | null
@@ -578,6 +1028,7 @@ export type Database = {
           rfq_received_date?: string | null
           rfq_status?: string | null
           signed_contract_date?: string | null
+          source_campaign_contact_id?: string | null
           stage?: string
           start_date?: string | null
           total_contract_value?: number | null
@@ -592,7 +1043,138 @@ export type Database = {
             referencedRelation: "accounts"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "deals_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "campaigns"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "deals_source_campaign_contact_id_fkey"
+            columns: ["source_campaign_contact_id"]
+            isOneToOne: false
+            referencedRelation: "campaign_contacts"
+            referencedColumns: ["id"]
+          },
         ]
+      }
+      email_history: {
+        Row: {
+          account_id: string | null
+          body: string | null
+          bounce_reason: string | null
+          bounce_type: string | null
+          bounced_at: string | null
+          click_count: number | null
+          clicked_at: string | null
+          contact_id: string | null
+          created_at: string | null
+          delivered_at: string | null
+          id: string
+          is_valid_open: boolean | null
+          last_reply_at: string | null
+          lead_id: string | null
+          open_count: number | null
+          opened_at: string | null
+          recipient_email: string
+          recipient_name: string | null
+          replied_at: string | null
+          reply_count: number | null
+          sender_email: string
+          sent_at: string
+          sent_by: string | null
+          status: string
+          subject: string
+          unique_opens: number | null
+        }
+        Insert: {
+          account_id?: string | null
+          body?: string | null
+          bounce_reason?: string | null
+          bounce_type?: string | null
+          bounced_at?: string | null
+          click_count?: number | null
+          clicked_at?: string | null
+          contact_id?: string | null
+          created_at?: string | null
+          delivered_at?: string | null
+          id?: string
+          is_valid_open?: boolean | null
+          last_reply_at?: string | null
+          lead_id?: string | null
+          open_count?: number | null
+          opened_at?: string | null
+          recipient_email: string
+          recipient_name?: string | null
+          replied_at?: string | null
+          reply_count?: number | null
+          sender_email: string
+          sent_at?: string
+          sent_by?: string | null
+          status?: string
+          subject: string
+          unique_opens?: number | null
+        }
+        Update: {
+          account_id?: string | null
+          body?: string | null
+          bounce_reason?: string | null
+          bounce_type?: string | null
+          bounced_at?: string | null
+          click_count?: number | null
+          clicked_at?: string | null
+          contact_id?: string | null
+          created_at?: string | null
+          delivered_at?: string | null
+          id?: string
+          is_valid_open?: boolean | null
+          last_reply_at?: string | null
+          lead_id?: string | null
+          open_count?: number | null
+          opened_at?: string | null
+          recipient_email?: string
+          recipient_name?: string | null
+          replied_at?: string | null
+          reply_count?: number | null
+          sender_email?: string
+          sent_at?: string
+          sent_by?: string | null
+          status?: string
+          subject?: string
+          unique_opens?: number | null
+        }
+        Relationships: []
+      }
+      email_templates: {
+        Row: {
+          body: string
+          created_at: string | null
+          created_by: string | null
+          id: string
+          name: string
+          subject: string
+          updated_at: string | null
+        }
+        Insert: {
+          body: string
+          created_at?: string | null
+          created_by?: string | null
+          id?: string
+          name: string
+          subject: string
+          updated_at?: string | null
+        }
+        Update: {
+          body?: string
+          created_at?: string | null
+          created_by?: string | null
+          id?: string
+          name?: string
+          subject?: string
+          updated_at?: string | null
+        }
+        Relationships: []
       }
       keep_alive: {
         Row: {
@@ -835,10 +1417,14 @@ export type Database = {
           admin_access: boolean | null
           created_at: string | null
           description: string | null
+          field_sales_access: boolean | null
           id: string
+          inside_sales_access: boolean | null
           manager_access: boolean | null
           page_name: string
           route: string
+          sales_head_access: boolean | null
+          super_admin_access: boolean | null
           updated_at: string | null
           user_access: boolean | null
         }
@@ -846,10 +1432,14 @@ export type Database = {
           admin_access?: boolean | null
           created_at?: string | null
           description?: string | null
+          field_sales_access?: boolean | null
           id?: string
+          inside_sales_access?: boolean | null
           manager_access?: boolean | null
           page_name: string
           route: string
+          sales_head_access?: boolean | null
+          super_admin_access?: boolean | null
           updated_at?: string | null
           user_access?: boolean | null
         }
@@ -857,10 +1447,14 @@ export type Database = {
           admin_access?: boolean | null
           created_at?: string | null
           description?: string | null
+          field_sales_access?: boolean | null
           id?: string
+          inside_sales_access?: boolean | null
           manager_access?: boolean | null
           page_name?: string
           route?: string
+          sales_head_access?: boolean | null
+          super_admin_access?: boolean | null
           updated_at?: string | null
           user_access?: boolean | null
         }
@@ -1091,9 +1685,14 @@ export type Database = {
     }
     Functions: {
       archive_completed_action_items: { Args: never; Returns: number }
+      can_manage_campaign: { Args: { _campaign_id: string }; Returns: boolean }
+      can_view_campaign: { Args: { _campaign_id: string }; Returns: boolean }
+      cleanup_campaign_action_items_on_delete: {
+        Args: { _campaign_id: string }
+        Returns: undefined
+      }
       get_user_role: { Args: { p_user_id: string }; Returns: string }
       is_current_user_admin: { Args: never; Returns: boolean }
-      is_current_user_admin_by_metadata: { Args: never; Returns: boolean }
       is_user_admin: { Args: { user_id?: string }; Returns: boolean }
       log_data_access: {
         Args: {
@@ -1118,7 +1717,14 @@ export type Database = {
       }
     }
     Enums: {
-      user_role: "admin" | "manager" | "user"
+      user_role:
+        | "admin"
+        | "manager"
+        | "user"
+        | "super_admin"
+        | "sales_head"
+        | "field_sales"
+        | "inside_sales"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -1246,7 +1852,15 @@ export type CompositeTypes<
 export const Constants = {
   public: {
     Enums: {
-      user_role: ["admin", "manager", "user"],
+      user_role: [
+        "admin",
+        "manager",
+        "user",
+        "super_admin",
+        "sales_head",
+        "field_sales",
+        "inside_sales",
+      ],
     },
   },
 } as const

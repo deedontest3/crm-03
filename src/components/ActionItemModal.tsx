@@ -16,10 +16,22 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import { Calendar } from '@/components/ui/calendar';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { format } from 'date-fns';
-import { CalendarIcon, Loader2 } from 'lucide-react';
+import { CalendarIcon, Loader2, Check, ChevronsUpDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAllUsers } from '@/hooks/useUserDisplayNames';
 import { useModuleRecords } from '@/hooks/useModuleRecords';
@@ -68,9 +80,9 @@ const statusOptions: { value: ActionItemStatus; label: string; dotColor: string 
 ];
 
 const moduleOptions: { value: ModuleType; label: string }[] = [
-  { value: 'deals', label: 'Deals' },
-  { value: 'leads', label: 'Leads' },
+  { value: 'accounts', label: 'Accounts' },
   { value: 'contacts', label: 'Contacts' },
+  { value: 'deals', label: 'Deals' },
 ];
 
 export function ActionItemModal({
@@ -78,12 +90,14 @@ export function ActionItemModal({
   onOpenChange,
   actionItem,
   onSave,
-  defaultModuleType = 'deals',
+  defaultModuleType = 'accounts',
   defaultModuleId,
 }: ActionItemModalProps) {
   const { users, getUserDisplayName } = useAllUsers();
   const { user } = useAuth();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [recordSearchOpen, setRecordSearchOpen] = useState(false);
+  const [recordSearchValue, setRecordSearchValue] = useState('');
   const [formData, setFormData] = useState({
     module_type: defaultModuleType as ModuleType,
     module_id: defaultModuleId || null as string | null,
@@ -98,7 +112,7 @@ export function ActionItemModal({
   // Fetch records for the selected module
   const { records, isLoading: isLoadingRecords } = useModuleRecords(formData.module_type);
 
-  // Get creator's display name - use actionItem.created_by when editing, otherwise current user
+  // Get creator's display name
   const creatorName = actionItem 
     ? getUserDisplayName(actionItem.created_by) 
     : (user ? getUserDisplayName(user.id) : 'Unknown');
@@ -107,7 +121,7 @@ export function ActionItemModal({
   useEffect(() => {
     if (actionItem) {
       setFormData({
-        module_type: actionItem.module_type,
+        module_type: actionItem.module_type as ModuleType,
         module_id: actionItem.module_id,
         title: actionItem.title,
         description: actionItem.description || '',
@@ -128,12 +142,14 @@ export function ActionItemModal({
         status: 'Open',
       });
     }
+    setRecordSearchValue('');
   }, [actionItem, open, defaultModuleType, defaultModuleId]);
 
   // Reset module_id when module_type changes (unless editing)
   useEffect(() => {
     if (!actionItem && open) {
       setFormData((prev) => ({ ...prev, module_id: null }));
+      setRecordSearchValue('');
     }
   }, [formData.module_type, actionItem, open]);
 
@@ -163,16 +179,26 @@ export function ActionItemModal({
 
   const getRecordPlaceholder = () => {
     switch (formData.module_type) {
-      case 'deals':
-        return 'Select deal...';
-      case 'leads':
-        return 'Select lead...';
+      case 'accounts':
+        return 'Select account...';
       case 'contacts':
         return 'Select contact...';
+      case 'deals':
+        return 'Select deal...';
       default:
         return 'Select record...';
     }
   };
+
+  const selectedRecordName = formData.module_id
+    ? records.find((r) => r.id === formData.module_id)?.name
+    : null;
+
+  const filteredRecords = recordSearchValue
+    ? records.filter((r) =>
+        r.name.toLowerCase().includes(recordSearchValue.toLowerCase())
+      )
+    : records;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -208,38 +234,85 @@ export function ActionItemModal({
                 </Select>
               </div>
 
-              {/* Record Selection */}
+              {/* Record Selection - Searchable Combobox */}
               <div className="space-y-2">
                 <Label htmlFor="record">Record</Label>
-                <Select
-                  value={formData.module_id || 'none'}
-                  onValueChange={(value) =>
-                    setFormData((prev) => ({
-                      ...prev,
-                      module_id: value === 'none' ? null : value,
-                    }))
-                  }
-                  disabled={isLoadingRecords}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder={getRecordPlaceholder()} />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-[200px]">
-                    <SelectItem value="none">No linked record</SelectItem>
-                    {records.map((record) => (
-                      <SelectItem key={record.id} value={record.id}>
-                        {record.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover open={recordSearchOpen} onOpenChange={setRecordSearchOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={recordSearchOpen}
+                      className="w-full justify-between font-normal"
+                      disabled={isLoadingRecords}
+                    >
+                      <span className="truncate">
+                        {isLoadingRecords
+                          ? 'Loading...'
+                          : selectedRecordName || getRecordPlaceholder()}
+                      </span>
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent
+                    className="p-0 w-[--radix-popover-trigger-width]"
+                    align="start"
+                  >
+                    <Command shouldFilter={false}>
+                      <CommandInput
+                        placeholder={`Search ${formData.module_type}...`}
+                        value={recordSearchValue}
+                        onValueChange={setRecordSearchValue}
+                      />
+                      <CommandList className="max-h-[200px]">
+                        <CommandEmpty>No records found.</CommandEmpty>
+                        <CommandGroup>
+                          <CommandItem
+                            value="none"
+                            onSelect={() => {
+                              setFormData((prev) => ({ ...prev, module_id: null }));
+                              setRecordSearchOpen(false);
+                              setRecordSearchValue('');
+                            }}
+                          >
+                            <Check
+                              className={cn(
+                                'mr-2 h-4 w-4',
+                                !formData.module_id ? 'opacity-100' : 'opacity-0'
+                              )}
+                            />
+                            No linked record
+                          </CommandItem>
+                          {filteredRecords.map((record) => (
+                            <CommandItem
+                              key={record.id}
+                              value={record.id}
+                              onSelect={() => {
+                                setFormData((prev) => ({ ...prev, module_id: record.id }));
+                                setRecordSearchOpen(false);
+                                setRecordSearchValue('');
+                              }}
+                            >
+                              <Check
+                                className={cn(
+                                  'mr-2 h-4 w-4',
+                                  formData.module_id === record.id ? 'opacity-100' : 'opacity-0'
+                                )}
+                              />
+                              {record.name}
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               </div>
             </div>
           </div>
 
           {/* Section 2: Action Item Details */}
           <div className="space-y-4">
-
             {/* Title */}
             <div className="space-y-2">
               <Label htmlFor="title">Title *</Label>

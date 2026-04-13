@@ -17,17 +17,17 @@ export function useModuleRecords(moduleType: ModuleType | null) {
       let nameField: string;
 
       switch (moduleType) {
-        case 'deals':
-          query = supabase.from('deals').select('id, deal_name').order('deal_name');
-          nameField = 'deal_name';
-          break;
-        case 'leads':
-          query = supabase.from('deals').select('id, deal_name').eq('stage', 'Lead').order('deal_name');
-          nameField = 'deal_name';
+        case 'accounts':
+          query = supabase.from('accounts').select('id, account_name').order('account_name');
+          nameField = 'account_name';
           break;
         case 'contacts':
           query = supabase.from('contacts').select('id, contact_name').order('contact_name');
           nameField = 'contact_name';
+          break;
+        case 'deals':
+          query = supabase.from('deals').select('id, deal_name').order('deal_name');
+          nameField = 'deal_name';
           break;
         default:
           return [];
@@ -58,17 +58,17 @@ export function useModuleRecordName(moduleType: string | null, moduleId: string 
       let nameField: string;
 
       switch (moduleType) {
-        case 'deals':
-          query = supabase.from('deals').select('deal_name').eq('id', moduleId).single();
-          nameField = 'deal_name';
-          break;
-        case 'leads':
-          query = supabase.from('deals').select('deal_name').eq('stage', 'Lead').eq('id', moduleId).single();
-          nameField = 'deal_name';
+        case 'accounts':
+          query = supabase.from('accounts').select('account_name').eq('id', moduleId).single();
+          nameField = 'account_name';
           break;
         case 'contacts':
           query = supabase.from('contacts').select('contact_name').eq('id', moduleId).single();
           nameField = 'contact_name';
+          break;
+        case 'deals':
+          query = supabase.from('deals').select('deal_name').eq('id', moduleId).single();
+          nameField = 'deal_name';
           break;
         default:
           return null;
@@ -93,12 +93,34 @@ export function useModuleRecordNames(items: Array<{ module_type: string; module_
       const names: Record<string, string> = {};
       
       // Group items by module type
-      const dealIds = items.filter(i => i.module_type === 'deals' && i.module_id).map(i => i.module_id!);
-      const leadIds = items.filter(i => i.module_type === 'leads' && i.module_id).map(i => i.module_id!);
+      const accountIds = items.filter(i => i.module_type === 'accounts' && i.module_id).map(i => i.module_id!);
       const contactIds = items.filter(i => i.module_type === 'contacts' && i.module_id).map(i => i.module_id!);
+      const dealIds = items.filter(i => i.module_type === 'deals' && i.module_id).map(i => i.module_id!);
+      const campaignIds = items.filter(i => i.module_type === 'campaigns' && i.module_id).map(i => i.module_id!);
 
-      // Fetch all at once
       const promises = [];
+
+      if (accountIds.length > 0) {
+        promises.push(
+          supabase.from('accounts').select('id, account_name').in('id', accountIds)
+            .then(({ data }) => {
+              (data || []).forEach((a: any) => {
+                names[`accounts:${a.id}`] = a.account_name;
+              });
+            })
+        );
+      }
+
+      if (contactIds.length > 0) {
+        promises.push(
+          supabase.from('contacts').select('id, contact_name').in('id', contactIds)
+            .then(({ data }) => {
+              (data || []).forEach((c: any) => {
+                names[`contacts:${c.id}`] = c.contact_name;
+              });
+            })
+        );
+      }
 
       if (dealIds.length > 0) {
         promises.push(
@@ -111,23 +133,12 @@ export function useModuleRecordNames(items: Array<{ module_type: string; module_
         );
       }
 
-      if (leadIds.length > 0) {
+      if (campaignIds.length > 0) {
         promises.push(
-          supabase.from('deals').select('id, deal_name').eq('stage', 'Lead').in('id', leadIds)
-            .then(({ data }) => {
-              (data || []).forEach((l: any) => {
-                names[`leads:${l.id}`] = l.deal_name;
-              });
-            })
-        );
-      }
-
-      if (contactIds.length > 0) {
-        promises.push(
-          supabase.from('contacts').select('id, contact_name').in('id', contactIds)
+          supabase.from('campaigns').select('id, campaign_name').in('id', campaignIds)
             .then(({ data }) => {
               (data || []).forEach((c: any) => {
-                names[`contacts:${c.id}`] = c.contact_name;
+                names[`campaigns:${c.id}`] = c.campaign_name;
               });
             })
         );

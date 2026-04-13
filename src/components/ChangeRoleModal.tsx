@@ -8,6 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { Shield, User } from "lucide-react";
 import { useUserRole } from "@/hooks/useUserRole";
+import { useSecurityAudit } from "@/hooks/useSecurityAudit";
 
 interface User {
   id: string;
@@ -30,6 +31,7 @@ const ChangeRoleModal = ({ open, onClose, user, onSuccess }: ChangeRoleModalProp
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
   const { isAdmin } = useUserRole();
+  const { logSecurityEvent } = useSecurityAudit();
 
   useEffect(() => {
     if (user) {
@@ -71,6 +73,12 @@ const ChangeRoleModal = ({ open, onClose, user, onSuccess }: ChangeRoleModalProp
       if (error) throw error;
 
       if (data?.success) {
+        logSecurityEvent('ROLE_CHANGE', 'user_roles', user.id, {
+          email: user.email,
+          old_role: user.role || 'user',
+          new_role: selectedRole
+        });
+        
         toast({
           title: "Success",
           description: `User role updated to ${selectedRole}`,

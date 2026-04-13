@@ -12,6 +12,8 @@ import Accounts from "./pages/Accounts";
 import Contacts from "./pages/Contacts";
 // Leads module removed - leads are now managed under Deals Lead stage
 import DealsPage from "./pages/DealsPage";
+import Campaigns from "./pages/Campaigns";
+import CampaignDetail from "./pages/CampaignDetail";
 import ActionItems from "./pages/ActionItems";
 import Settings from "./pages/Settings";
 import Auth from "./pages/Auth";
@@ -27,7 +29,7 @@ const FixedSidebarLayout = ({ children }: { children: React.ReactNode }) => {
   const location = useLocation();
   
   // These routes need overflow-hidden so they can control their own scrolling
-  const controlledScrollRoutes = ['/action-items', '/leads', '/contacts', '/deals', '/settings', '/notifications', '/', '/accounts'];
+  const controlledScrollRoutes = ['/action-items', '/contacts', '/deals', '/settings', '/notifications', '/', '/accounts', '/campaigns'];
   const needsControlledScroll = controlledScrollRoutes.includes(location.pathname);
   
   return (
@@ -124,10 +126,20 @@ const AppRouter = () => (
           <Contacts />
         </ProtectedRoute>
       } />
-      <Route path="/leads" element={<Navigate to="/deals" replace />} />
+      
       <Route path="/deals" element={
         <ProtectedRoute>
           <DealsPage />
+        </ProtectedRoute>
+      } />
+      <Route path="/campaigns" element={
+        <ProtectedRoute>
+          <Campaigns />
+        </ProtectedRoute>
+      } />
+      <Route path="/campaigns/:id" element={
+        <ProtectedRoute>
+          <CampaignDetail />
         </ProtectedRoute>
       } />
       <Route path="/action-items" element={

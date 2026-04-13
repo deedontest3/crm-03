@@ -17,7 +17,7 @@ const DealsPage = () => {
   const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { logCreate, logUpdate, logBulkDelete } = useCRUDAudit();
+  const { logCreate, logUpdate, logDelete, logBulkDelete } = useCRUDAudit();
   
   // URL params for highlight from notifications
   const [searchParams, setSearchParams] = useSearchParams();
@@ -203,8 +203,13 @@ const DealsPage = () => {
       if (deletedIds.length > 0) {
         setDeals(prev => prev.filter(deal => !deletedIds.includes(deal.id)));
 
-        // Log bulk delete with only the successfully deleted IDs
-        await logBulkDelete('deals', deletedIds.length, deletedIds);
+        // Log delete with appropriate method
+        if (deletedIds.length === 1) {
+          const deletedDeal = deals.find(d => d.id === deletedIds[0]);
+          await logDelete('deals', deletedIds[0], deletedDeal);
+        } else {
+          await logBulkDelete('deals', deletedIds.length, deletedIds);
+        }
 
         toast({
           title: "Success",

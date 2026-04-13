@@ -1,0 +1,255 @@
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Plus, Search, Megaphone, Eye, Edit2, Copy, Archive, ArchiveRestore } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { useCampaigns } from "@/hooks/useCampaigns";
+import { useUserDisplayNames } from "@/hooks/useUserDisplayNames";
+import { useMemo } from "react";
+import { CampaignModal } from "@/components/campaigns/CampaignModal";
+import { format } from "date-fns";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+
+const statusColors: Record<string, string> = {
+  Draft: "bg-muted text-muted-foreground",
+  Active: "bg-primary/10 text-primary",
+  Paused: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400",
+  Completed: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
+};
+
+export default function Campaigns() {
+  const navigate = useNavigate();
+  const { campaigns, archivedCampaigns, isLoading, archiveCampaign, restoreCampaign, cloneCampaign, getMartProgress } = useCampaigns();
+  const [archiveView, setArchiveView] = useState<"active" | "archived">("active");
+  const displayedCampaigns = archiveView === "active" ? campaigns : archivedCampaigns;
+  const ownerIds = useMemo(() => displayedCampaigns.map((c) => c.owner).filter(Boolean) as string[], [displayedCampaigns]);
+  const { displayNames } = useUserDisplayNames(ownerIds);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editCampaign, setEditCampaign] = useState<any>(null);
+  const [archiveId, setArchiveId] = useState<string | null>(null);
+
+  const filtered = displayedCampaigns.filter((c) => {
+    const matchesSearch = c.campaign_name.toLowerCase().includes(search.toLowerCase());
+    const matchesStatus = statusFilter === "all" || c.status === statusFilter;
+    const matchesType = typeFilter === "all" || c.campaign_type === typeFilter;
+    return matchesSearch && matchesStatus && matchesType;
+  });
+
+  const handleArchive = () => {
+    if (archiveId) {
+      archiveCampaign.mutate(archiveId);
+      setArchiveId(null);
+    }
+  };
+
+  const getMartBadge = (campaignId: string) => {
+    const { count, total } = getMartProgress(campaignId);
+    let colorClass = "bg-muted text-muted-foreground";
+    if (count === total) colorClass = "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400";
+    else if (count > 0) colorClass = "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400";
+    return <Badge className={colorClass} variant="secondary">{count}/{total}</Badge>;
+  };
+
+  return (
+    <div className="h-full flex flex-col overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between p-6 pb-4 border-b border-border">
+        <div className="flex items-center gap-3">
+          <Megaphone className="h-6 w-6 text-primary" />
+          <h1 className="text-2xl font-semibold text-foreground">Campaigns</h1>
+          <Badge variant="secondary" className="ml-2">{filtered.length}</Badge>
+        </div>
+        <Button onClick={() => { setEditCampaign(null); setModalOpen(true); }}>
+          <Plus className="h-4 w-4 mr-2" /> New Campaign
+        </Button>
+      </div>
+
+      {/* Filters */}
+      <div className="flex items-center gap-3 p-4 border-b border-border flex-wrap">
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input placeholder="Search campaigns..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+        </div>
+        <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <SelectTrigger className="w-[140px]"><SelectValue placeholder="Status" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Statuses</SelectItem>
+            <SelectItem value="Draft">Draft</SelectItem>
+            <SelectItem value="Active">Active</SelectItem>
+            <SelectItem value="Paused">Paused</SelectItem>
+            <SelectItem value="Completed">Completed</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={typeFilter} onValueChange={setTypeFilter}>
+          <SelectTrigger className="w-[160px]"><SelectValue placeholder="Type" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Types</SelectItem>
+            <SelectItem value="Cold Outreach">Cold Outreach</SelectItem>
+            <SelectItem value="Nurture">Nurture</SelectItem>
+            <SelectItem value="Re-engagement">Re-engagement</SelectItem>
+            <SelectItem value="Event">Event</SelectItem>
+            <SelectItem value="Product Launch">Product Launch</SelectItem>
+          </SelectContent>
+        </Select>
+        <div className="flex items-center gap-1 ml-auto">
+          <Button
+            variant={archiveView === "active" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setArchiveView("active")}
+          >
+            Active
+          </Button>
+          <Button
+            variant={archiveView === "archived" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setArchiveView("archived")}
+          >
+            <Archive className="h-3.5 w-3.5 mr-1" />
+            Archived
+          </Button>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="flex-1 overflow-auto">
+        {isLoading ? (
+          <div className="flex items-center justify-center h-40">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-40 text-muted-foreground gap-3">
+            <Megaphone className="h-10 w-10 opacity-50" />
+            <p>{archiveView === "archived" ? "No archived campaigns" : "No campaigns yet"}</p>
+            {archiveView === "active" && (
+              <Button onClick={() => { setEditCampaign(null); setModalOpen(true); }}>
+                <Plus className="h-4 w-4 mr-2" /> Create your first campaign
+              </Button>
+            )}
+          </div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead>Owner</TableHead>
+                <TableHead>Start Date</TableHead>
+                <TableHead>End Date</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>MART</TableHead>
+                <TableHead className="w-[150px]">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.map((campaign) => (
+                <TableRow
+                  key={campaign.id}
+                  className={`cursor-pointer hover:bg-muted/50 ${campaign.archived_at ? "opacity-60" : ""}`}
+                  onClick={() => navigate(`/campaigns/${campaign.id}`)}
+                >
+                  <TableCell className="font-medium">
+                    {campaign.campaign_name}
+                    {campaign.archived_at && (
+                      <Badge variant="outline" className="ml-2 text-xs">Archived</Badge>
+                    )}
+                  </TableCell>
+                  <TableCell>{campaign.campaign_type}</TableCell>
+                  <TableCell>{campaign.owner ? displayNames[campaign.owner] || "—" : "—"}</TableCell>
+                  <TableCell>{campaign.start_date ? format(new Date(campaign.start_date + "T00:00:00"), "dd MMM yyyy") : "—"}</TableCell>
+                  <TableCell>{campaign.end_date ? format(new Date(campaign.end_date + "T00:00:00"), "dd MMM yyyy") : "—"}</TableCell>
+                  <TableCell>
+                    <Badge className={statusColors[campaign.status || "Draft"]} variant="secondary">{campaign.status}</Badge>
+                  </TableCell>
+                  <TableCell>{getMartBadge(campaign.id)}</TableCell>
+                  <TableCell>
+                    <TooltipProvider delayDuration={300}>
+                      <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                        <Tooltip><TooltipTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => navigate(`/campaigns/${campaign.id}`)}>
+                            <Eye className="h-4 w-4 text-muted-foreground" />
+                          </Button>
+                        </TooltipTrigger><TooltipContent>View</TooltipContent></Tooltip>
+                        {!campaign.archived_at && (
+                          <>
+                            <Tooltip><TooltipTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditCampaign(campaign); setModalOpen(true); }}>
+                                <Edit2 className="h-4 w-4 text-muted-foreground" />
+                              </Button>
+                            </TooltipTrigger><TooltipContent>Edit</TooltipContent></Tooltip>
+                            <Tooltip><TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                onClick={() => cloneCampaign.mutateAsync(campaign.id).then((newId) => { if (newId) navigate(`/campaigns/${newId}`); })}
+                              >
+                                <Copy className="h-4 w-4 text-muted-foreground" />
+                              </Button>
+                            </TooltipTrigger><TooltipContent>Clone</TooltipContent></Tooltip>
+                            <Tooltip><TooltipTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setArchiveId(campaign.id)}>
+                                <Archive className="h-4 w-4 text-muted-foreground" />
+                              </Button>
+                            </TooltipTrigger><TooltipContent>Archive</TooltipContent></Tooltip>
+                          </>
+                        )}
+                        {campaign.archived_at && (
+                          <Tooltip><TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={() => restoreCampaign.mutate(campaign.id)}
+                            >
+                              <ArchiveRestore className="h-4 w-4 text-muted-foreground" />
+                            </Button>
+                          </TooltipTrigger><TooltipContent>Restore</TooltipContent></Tooltip>
+                        )}
+                      </div>
+                    </TooltipProvider>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </div>
+
+      <CampaignModal
+        open={modalOpen}
+        onClose={() => { setModalOpen(false); setEditCampaign(null); }}
+        campaign={editCampaign}
+        onCreated={(id) => navigate(`/campaigns/${id}`)}
+      />
+
+      <AlertDialog open={!!archiveId} onOpenChange={(v) => !v && setArchiveId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Archive Campaign</AlertDialogTitle>
+            <AlertDialogDescription>This campaign will be moved to the archive. You can restore it later.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleArchive}>Archive</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}

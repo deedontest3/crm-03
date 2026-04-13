@@ -1,0 +1,1 @@
+ALTER TABLE notification_preferences ALTER COLUMN daily_reminder_time SET DEFAULT '07:00'; UPDATE notification_preferences SET daily_reminder_time = '07:00' WHERE daily_reminder_time = '09:00';

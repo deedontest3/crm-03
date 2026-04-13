@@ -38,7 +38,7 @@ export const useSecureContacts = () => {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
   const { secureQuery, secureExport } = useSecureDataAccess();
-  const { logDelete } = useCRUDAudit();
+  const { logCreate, logUpdate, logDelete } = useCRUDAudit();
   const { toast } = useToast();
 
   const fetchContacts = async () => {
@@ -73,6 +73,7 @@ export const useSecureContacts = () => {
       
       if (result.data) {
         setContacts(prev => [result.data, ...prev]);
+        await logCreate('contacts', result.data.id, { contact_name: result.data.contact_name, ...contactData });
         toast({
           title: "Success",
           description: "Contact created successfully",
@@ -93,6 +94,20 @@ export const useSecureContacts = () => {
 
   const updateContact = async (id: string, updates: Partial<Contact>) => {
     try {
+      let existingContact = contacts.find(c => c.id === id);
+      
+      // If not found in local state, fetch from DB before update
+      if (!existingContact) {
+        try {
+          const { data } = await supabase
+            .from('contacts')
+            .select('*')
+            .eq('id', id)
+            .single();
+          if (data) existingContact = data as Contact;
+        } catch { /* proceed without old data */ }
+      }
+      
       const query = supabase
         .from('contacts')
         .update({
@@ -110,6 +125,7 @@ export const useSecureContacts = () => {
         setContacts(prev => prev.map(contact => 
           contact.id === id ? result.data : contact
         ));
+        await logUpdate('contacts', id, updates, existingContact || {});
       }
       
       return result.data;

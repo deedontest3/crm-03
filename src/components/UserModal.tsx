@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+import { useSecurityAudit } from "@/hooks/useSecurityAudit";
 
 interface UserModalProps {
   open: boolean;
@@ -21,6 +22,7 @@ const UserModal = ({ open, onClose, onSuccess }: UserModalProps) => {
   const [role, setRole] = useState('user');
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
+  const { logSecurityEvent } = useSecurityAudit();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,6 +59,12 @@ const UserModal = ({ open, onClose, onSuccess }: UserModalProps) => {
       });
 
       if (error) throw error;
+
+      logSecurityEvent('USER_CREATED', 'users', undefined, {
+        email,
+        role,
+        display_name: displayName
+      });
 
       toast({
         title: "Success",

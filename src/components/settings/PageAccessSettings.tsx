@@ -5,6 +5,7 @@ import { Switch } from '@/components/ui/switch';
 import { Loader2 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import { useSecurityAudit } from '@/hooks/useSecurityAudit';
 
 interface PagePermission {
   id: string;
@@ -20,6 +21,7 @@ const PageAccessSettings = () => {
   const [permissions, setPermissions] = useState<PagePermission[]>([]);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState<string | null>(null);
+  const { logSecurityEvent } = useSecurityAudit();
 
   const fetchPermissions = async () => {
     setLoading(true);
@@ -53,9 +55,16 @@ const PageAccessSettings = () => {
       
       if (error) throw error;
       
+      const perm = permissions.find(p => p.id === id);
       setPermissions(prev => prev.map(p => 
         p.id === id ? { ...p, [field]: value } : p
       ));
+      logSecurityEvent('SETTINGS_UPDATE', 'page_permissions', id, {
+        page_name: perm?.page_name,
+        field,
+        old_value: !value,
+        new_value: value
+      });
       toast.success('Permission updated');
     } catch (error) {
       console.error('Error updating permission:', error);

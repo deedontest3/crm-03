@@ -8,11 +8,13 @@ import {
   PinOff,
   Bell,
   CheckSquare,
-  Building2
+  Building2,
+  Megaphone
 } from "lucide-react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useState } from "react";
+import { useNotifications } from "@/hooks/useNotifications";
 import {
   Tooltip,
   TooltipContent,
@@ -34,6 +36,7 @@ const menuItems = [
   { title: "Accounts", url: "/accounts", icon: Building2 },
   { title: "Contacts", url: "/contacts", icon: Users },
   { title: "Deals", url: "/deals", icon: BarChart3 },
+  { title: "Campaigns", url: "/campaigns", icon: Megaphone },
   { title: "Action Items", url: "/action-items", icon: CheckSquare },
 ];
 
@@ -50,6 +53,7 @@ export function AppSidebar({ isFixed = false, isOpen, onToggle }: AppSidebarProp
   const navigate = useNavigate();
   const { user, signOut } = useAuth();
   const currentPath = location.pathname;
+  const { unreadCount } = useNotifications();
 
   // Use external state if provided (for fixed mode), otherwise use internal state
   const sidebarOpen = isFixed ? (isOpen ?? false) : isPinned;
@@ -191,8 +195,13 @@ export function AppSidebar({ isFixed = false, isOpen, onToggle }: AppSidebarProp
                     : 'text-sidebar-foreground/70 hover:text-sidebar-primary hover:bg-sidebar-accent/50'
                 }`}
               >
-                <div className="w-10 h-10 flex items-center justify-center flex-shrink-0">
+                <div className="w-10 h-10 flex items-center justify-center flex-shrink-0 relative">
                   <Bell className="w-5 h-5" />
+                  {unreadCount > 0 && (
+                    <span className="absolute top-1 right-1 min-w-[16px] h-4 flex items-center justify-center rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold px-1">
+                      {unreadCount > 99 ? '99+' : unreadCount}
+                    </span>
+                  )}
                 </div>
                 <div 
                   className={`transition-all duration-300 overflow-hidden whitespace-nowrap ${

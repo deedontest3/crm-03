@@ -7,11 +7,15 @@ import { Search, CalendarIcon, X } from "lucide-react";
 import { format } from "date-fns";
 import { FilterCategory, getDatePresets } from "./auditLogUtils";
 
+export type ModuleFilter = 'all' | 'deals' | 'contacts' | 'leads' | 'action_items' | 'accounts' | 'deal_stakeholders' | 'page_permissions' | 'email_templates' | 'notification_preferences';
+
 interface AuditLogFiltersProps {
   searchTerm: string;
   onSearchChange: (value: string) => void;
   category: FilterCategory;
   onCategoryChange: (value: FilterCategory) => void;
+  moduleFilter: ModuleFilter;
+  onModuleFilterChange: (value: ModuleFilter) => void;
   dateFrom: Date | undefined;
   dateTo: Date | undefined;
   onDateFromChange: (date: Date | undefined) => void;
@@ -21,6 +25,7 @@ interface AuditLogFiltersProps {
 export const AuditLogFilters = ({
   searchTerm, onSearchChange,
   category, onCategoryChange,
+  moduleFilter, onModuleFilterChange,
   dateFrom, dateTo,
   onDateFromChange, onDateToChange,
 }: AuditLogFiltersProps) => {
@@ -51,6 +56,24 @@ export const AuditLogFilters = ({
           <SelectItem value="authentication">Authentication</SelectItem>
           <SelectItem value="user_management">User Management</SelectItem>
           <SelectItem value="export">Data Import/Export</SelectItem>
+        </SelectContent>
+      </Select>
+
+      <Select value={moduleFilter} onValueChange={(v) => onModuleFilterChange(v as ModuleFilter)}>
+        <SelectTrigger className="w-[150px] h-8 text-sm">
+          <SelectValue placeholder="Module" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All Modules</SelectItem>
+          <SelectItem value="deals">Deals</SelectItem>
+          <SelectItem value="leads">Leads</SelectItem>
+          <SelectItem value="contacts">Contacts</SelectItem>
+          <SelectItem value="accounts">Accounts</SelectItem>
+          <SelectItem value="action_items">Action Items</SelectItem>
+          <SelectItem value="deal_stakeholders">Stakeholders</SelectItem>
+          <SelectItem value="page_permissions">Page Access</SelectItem>
+          <SelectItem value="email_templates">Email Templates</SelectItem>
+          <SelectItem value="notification_preferences">Notifications</SelectItem>
         </SelectContent>
       </Select>
 

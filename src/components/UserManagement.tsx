@@ -16,6 +16,7 @@ import EditUserModal from "./EditUserModal";
 import ChangeRoleModal from "./ChangeRoleModal";
 import DeleteUserDialog from "./DeleteUserDialog";
 import SetPasswordModal from "./SetPasswordModal";
+import { useSecurityAudit } from "@/hooks/useSecurityAudit";
 
 interface UserData {
   id: string;
@@ -42,6 +43,7 @@ const UserManagement = () => {
   const { toast } = useToast();
   const { refreshUser } = useAuth();
   const { isAdmin, loading: roleLoading, userRole } = useUserRole();
+  const { logSecurityEvent } = useSecurityAudit();
 
   console.log('UserManagement - Current user role:', userRole, 'isAdmin:', isAdmin, 'loading:', roleLoading);
 
@@ -185,6 +187,13 @@ const UserManagement = () => {
       });
 
       if (error) throw error;
+
+      logSecurityEvent(
+        action === 'activate' ? 'USER_ACTIVATED' : 'USER_DEACTIVATED',
+        'user_management',
+        user.id,
+        { email: user.email, full_name: user.user_metadata?.full_name }
+      );
 
       toast({
         title: "Success",

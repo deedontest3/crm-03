@@ -9,7 +9,7 @@ import { Download, Activity, Undo, Eye, RefreshCw } from "lucide-react";
 import { format } from "date-fns";
 import { RevertConfirmDialog } from "@/components/feeds/RevertConfirmDialog";
 import { StandardPagination } from "@/components/shared/StandardPagination";
-import { AuditLogFilters } from "./audit/AuditLogFilters";
+import { AuditLogFilters, ModuleFilter } from "./audit/AuditLogFilters";
 import { AuditLogDetailDialog } from "./audit/AuditLogDetailDialog";
 import { AuditLogStats } from "./audit/AuditLogStats";
 import {
@@ -18,7 +18,7 @@ import {
   getStatsFromLogs, formatFieldValue
 } from "./audit/auditLogUtils";
 
-type ValidTableName = 'contacts' | 'deals' | 'leads';
+type ValidTableName = 'contacts' | 'deals' | 'leads' | 'action_items';
 
 const badgeColorClasses: Record<string, string> = {
   green: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400',
@@ -48,6 +48,7 @@ const AuditLogsSettings = () => {
   const [category, setCategory] = useState<FilterCategory>('all_except_auth');
   const [dateFrom, setDateFrom] = useState<Date | undefined>();
   const [dateTo, setDateTo] = useState<Date | undefined>();
+  const [moduleFilter, setModuleFilter] = useState<ModuleFilter>('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [userNames, setUserNames] = useState<Record<string, string>>({});
   const [revertDialogOpen, setRevertDialogOpen] = useState(false);
@@ -71,7 +72,7 @@ const AuditLogsSettings = () => {
       if (error) throw error;
 
       const excluded = getExcludedActions();
-      const transformedLogs: AuditLog[] = (data || [])
+      let transformedLogs: AuditLog[] = (data || [])
         .filter(log => !excluded.includes(log.action))
         .map(log => ({
           id: log.id,
@@ -83,6 +84,83 @@ const AuditLogsSettings = () => {
           ip_address: log.ip_address ? String(log.ip_address) : undefined,
           created_at: log.created_at
         }));
+
+      const legacyActionItemIds = Array.from(new Set(
+        transformedLogs
+          .filter(log => log.resource_type === 'action_items' && log.action === 'BULK_UPDATE')
+          .flatMap(log => {
+            const existingTitles = log.details?.update_data?.item_titles || log.details?.item_titles;
+            if (Array.isArray(existingTitles) && existingTitles.length > 0) return [];
+
+            const recordIds = log.details?.update_data?.record_ids || log.details?.record_ids;
+            if (Array.isArray(recordIds) && recordIds.length > 0) return recordIds;
+
+            return log.resource_id ? [log.resource_id] : [];
+          })
+          .filter(Boolean)
+      ));
+
+      if (legacyActionItemIds.length > 0) {
+        const { data: actionItemRecords, error: actionItemError } = await supabase
+          .from('action_items')
+          .select('id, title')
+          .in('id', legacyActionItemIds);
+
+        if (actionItemError) throw actionItemError;
+
+        const titleMap = Object.fromEntries((actionItemRecords || []).map(item => [item.id, item.title]));
+
+        transformedLogs = transformedLogs.map(log => {
+          if (log.resource_type !== 'action_items' || log.action !== 'BULK_UPDATE') return log;
+
+          const recordCount = log.details?.record_count ?? 1;
+          const existingTitles = log.details?.update_data?.item_titles || log.details?.item_titles;
+          const recordIds = log.details?.update_data?.record_ids || log.details?.record_ids || (log.resource_id ? [log.resource_id] : []);
+          
+          // Resolve missing titles from DB
+          let resolvedTitles = existingTitles;
+          if (!Array.isArray(existingTitles) || existingTitles.length === 0) {
+            resolvedTitles = Array.isArray(recordIds)
+              ? recordIds.map((id: string) => titleMap[id]).filter(Boolean)
+              : [];
+          }
+
+          // Normalize single-record BULK_UPDATE → UPDATE
+          if (recordCount === 1 || (Array.isArray(recordIds) && recordIds.length === 1)) {
+            const title = resolvedTitles?.[0] || '';
+            const targetStatus = log.details?.update_data?.status || log.details?.status;
+            return {
+              ...log,
+              action: 'UPDATE',
+              resource_id: log.resource_id || recordIds?.[0],
+              details: {
+                ...(log.details || {}),
+                operation: 'UPDATE',
+                old_data: { title, status: null, module_type: 'action_items' },
+                updated_fields: targetStatus ? { status: targetStatus } : log.details?.update_data,
+                field_changes: targetStatus ? { status: { old: null, new: targetStatus } } : {},
+                module: 'Action_items',
+              },
+            };
+          }
+
+          // Multi-record: just attach resolved titles
+          if (!Array.isArray(resolvedTitles) || resolvedTitles.length === 0) return log;
+          return {
+            ...log,
+            resource_id: log.resource_id || recordIds[0],
+            details: {
+              ...(log.details || {}),
+              item_titles: resolvedTitles,
+              update_data: {
+                ...(log.details?.update_data || {}),
+                item_titles: resolvedTitles,
+                record_ids: recordIds,
+              },
+            },
+          };
+        });
+      }
 
       setLogs(transformedLogs);
     } catch (error: any) {
@@ -112,6 +190,14 @@ const AuditLogsSettings = () => {
   const filteredLogs = useMemo(() => {
     let result = filterByCategory(logs, category);
 
+    // Module filter
+    if (moduleFilter !== 'all') {
+      result = result.filter(log =>
+        log.resource_type === moduleFilter ||
+        log.details?.module?.toLowerCase() === moduleFilter
+      );
+    }
+
     if (searchTerm) {
       const term = searchTerm.toLowerCase();
       result = result.filter(log =>
@@ -132,14 +218,14 @@ const AuditLogsSettings = () => {
     }
 
     return result;
-  }, [logs, category, searchTerm, dateFrom, dateTo, userNames]);
+  }, [logs, category, moduleFilter, searchTerm, dateFrom, dateTo, userNames]);
 
   // Pagination
   const totalPages = Math.ceil(filteredLogs.length / ITEMS_PER_PAGE);
   const paginatedLogs = filteredLogs.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
 
   // Reset page on filter change
-  useEffect(() => { setCurrentPage(1); }, [category, searchTerm, dateFrom, dateTo]);
+  useEffect(() => { setCurrentPage(1); }, [category, moduleFilter, searchTerm, dateFrom, dateTo]);
 
   // Stats
   const stats = useMemo(() => getStatsFromLogs(filteredLogs), [filteredLogs]);
@@ -152,10 +238,10 @@ const AuditLogsSettings = () => {
 
   const canRevert = (log: AuditLog) =>
     ['CREATE', 'UPDATE', 'DELETE'].includes(log.action) &&
-    ['contacts', 'deals', 'leads'].includes(log.resource_type) &&
+    ['contacts', 'deals', 'leads', 'action_items'].includes(log.resource_type) &&
     log.resource_id && log.details;
 
-  const isValidTableName = (t: string): t is ValidTableName => ['contacts', 'deals', 'leads'].includes(t);
+  const isValidTableName = (t: string): t is ValidTableName => ['contacts', 'deals', 'leads', 'action_items'].includes(t);
 
   const handleRevertClick = (log: AuditLog) => { setSelectedLog(log); setRevertDialogOpen(true); };
 
@@ -240,6 +326,11 @@ const AuditLogsSettings = () => {
         byModule={stats.byModule}
         byUser={stats.byUser}
         userNames={userNames}
+        onDatePreset={(from, to) => { setDateFrom(from); setDateTo(to); }}
+        onModuleFilter={setModuleFilter}
+        activeModuleFilter={moduleFilter}
+        dateFrom={dateFrom}
+        dateTo={dateTo}
       />
 
       {/* Main Log Table */}
@@ -268,6 +359,8 @@ const AuditLogsSettings = () => {
             onSearchChange={setSearchTerm}
             category={category}
             onCategoryChange={setCategory}
+            moduleFilter={moduleFilter}
+            onModuleFilterChange={setModuleFilter}
             dateFrom={dateFrom}
             dateTo={dateTo}
             onDateFromChange={setDateFrom}
@@ -280,8 +373,8 @@ const AuditLogsSettings = () => {
             </div>
           ) : (
             <>
-              <div className="rounded-md border">
-                <Table>
+              <div className="rounded-md border overflow-hidden">
+                <Table className="table-fixed w-full">
                   <TableHeader>
                     <TableRow>
                       <TableHead className="w-[10%] py-2 text-xs">Activity</TableHead>
@@ -309,8 +402,8 @@ const AuditLogsSettings = () => {
                           <TableCell className="py-1.5 text-xs">
                             {getModuleName(log)}
                           </TableCell>
-                          <TableCell className="py-1.5 text-xs truncate">
-                            {summary}
+                          <TableCell className="py-1.5 text-xs">
+                            <span className="block break-words whitespace-normal">{summary}</span>
                           </TableCell>
                           <TableCell className="py-1.5">
                             <div className="flex items-center gap-1.5">

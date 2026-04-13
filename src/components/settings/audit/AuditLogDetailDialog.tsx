@@ -30,34 +30,65 @@ export const AuditLogDetailDialog = ({ log, open, onOpenChange, userName }: Audi
 
   const renderUpdateDetails = () => {
     const d = log.details;
-    if (!d?.field_changes) return <p className="text-sm text-muted-foreground">No change details available.</p>;
-    
-    const changes = filterNoiseFieldChanges(d.field_changes);
-    const entries = Object.entries(changes);
-    if (entries.length === 0) return <p className="text-sm text-muted-foreground">Only system fields were updated.</p>;
+    if (d?.field_changes) {
+      const changes = filterNoiseFieldChanges(d.field_changes);
+      const entries = Object.entries(changes);
+      if (entries.length === 0) return <p className="text-sm text-muted-foreground">Only system fields were updated.</p>;
 
-    return (
-      <div className="rounded-md border">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[30%]">Field</TableHead>
-              <TableHead className="w-[35%]">Previous Value</TableHead>
-              <TableHead className="w-[35%]">New Value</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {entries.map(([field, change]: [string, any]) => (
-              <TableRow key={field}>
-                <TableCell className="font-medium">{formatFieldName(field)}</TableCell>
-                <TableCell className="text-muted-foreground">{formatFieldValue(change.old)}</TableCell>
-                <TableCell className="text-foreground font-medium">{formatFieldValue(change.new)}</TableCell>
+      return (
+        <div className="rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[30%]">Field</TableHead>
+                <TableHead className="w-[35%]">Previous Value</TableHead>
+                <TableHead className="w-[35%]">New Value</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
-    );
+            </TableHeader>
+            <TableBody>
+              {entries.map(([field, change]: [string, any]) => (
+                <TableRow key={field}>
+                  <TableCell className="font-medium">{formatFieldName(field)}</TableCell>
+                  <TableCell className="text-muted-foreground">{formatFieldValue(change.old)}</TableCell>
+                  <TableCell className="text-foreground font-medium">{formatFieldValue(change.new)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      );
+    }
+
+    if (log.action === 'BULK_UPDATE') {
+      const titles = d?.update_data?.item_titles || d?.item_titles || [];
+      const recordIds = d?.update_data?.record_ids || d?.record_ids || (log.resource_id ? [log.resource_id] : []);
+      const status = d?.update_data?.status || d?.status;
+
+      return (
+        <div className="space-y-2">
+          {titles.length > 0 && (
+            <div className="flex flex-col py-1 border-b border-border/50">
+              <span className="text-xs text-muted-foreground">Record{titles.length > 1 ? 's' : ''}</span>
+              <span className="text-sm font-medium">{titles.join(', ')}</span>
+            </div>
+          )}
+          {status && (
+            <div className="flex flex-col py-1 border-b border-border/50">
+              <span className="text-xs text-muted-foreground">Updated Status</span>
+              <span className="text-sm font-medium">{formatFieldValue(status)}</span>
+            </div>
+          )}
+          {recordIds.length > 0 && (
+            <div className="flex flex-col py-1 border-b border-border/50">
+              <span className="text-xs text-muted-foreground">Record ID{recordIds.length > 1 ? 's' : ''}</span>
+              <span className="text-sm font-medium break-all">{recordIds.join(', ')}</span>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    return <p className="text-sm text-muted-foreground">No change details available.</p>;
   };
 
   const renderCreateDetails = () => {

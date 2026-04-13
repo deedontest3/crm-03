@@ -73,15 +73,22 @@ export const getRecordName = (log: AuditLog): string => {
   
   // From record_data (CREATE)
   if (d.record_data) {
-    return d.record_data.deal_name || d.record_data.lead_name || d.record_data.contact_name || d.record_data.account_name || d.record_data.title || '';
+    return d.record_data.deal_name || d.record_data.project_name || d.record_data.lead_name || d.record_data.contact_name || d.record_data.account_name || d.record_data.title || '';
   }
   // From old_data (UPDATE/DELETE)
   if (d.old_data) {
-    return d.old_data.deal_name || d.old_data.lead_name || d.old_data.contact_name || d.old_data.account_name || d.old_data.title || '';
+    return d.old_data.deal_name || d.old_data.project_name || d.old_data.lead_name || d.old_data.contact_name || d.old_data.account_name || d.old_data.title || '';
   }
   // From deleted_data (DELETE)
   if (d.deleted_data) {
-    return d.deleted_data.deal_name || d.deleted_data.lead_name || d.deleted_data.contact_name || d.deleted_data.account_name || d.deleted_data.title || '';
+    return d.deleted_data.deal_name || d.deleted_data.project_name || d.deleted_data.lead_name || d.deleted_data.contact_name || d.deleted_data.account_name || d.deleted_data.title || '';
+  }
+  // From resolved bulk update metadata
+  if (d.update_data?.item_titles?.length) {
+    return d.update_data.item_titles[0];
+  }
+  if (d.item_titles?.length) {
+    return d.item_titles[0];
   }
   return '';
 };
@@ -89,7 +96,10 @@ export const getRecordName = (log: AuditLog): string => {
 export const getModuleName = (log: AuditLog): string => {
   if (log.details?.module) {
     const m = log.details.module;
-    // Capitalize first letter
+    // Normalize to readable name, then use the standard map if available
+    const normalized = m.toLowerCase().replace(/ /g, '_');
+    const mapped = getReadableResourceType(normalized);
+    if (mapped !== normalized) return mapped;
     return m.charAt(0).toUpperCase() + m.slice(1).replace(/_/g, ' ');
   }
   return getReadableResourceType(log.resource_type);
@@ -101,6 +111,10 @@ export const getReadableResourceType = (resourceType: string): string => {
     action_items: 'Action Items', auth: 'Authentication',
     user_roles: 'User Roles', profiles: 'Profiles',
     user_management: 'User Management',
+    deal_stakeholders: 'Deals',
+    page_permissions: 'Page Access',
+    email_templates: 'Email Templates',
+    notification_preferences: 'Notifications',
   };
   return map[resourceType] || resourceType.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
 };
@@ -114,23 +128,62 @@ export const generateSummary = (log: AuditLog): string => {
     case 'CREATE':
       return name ? `Created new ${module.replace(/s$/, '')} "${name}"` : `Created new ${module.replace(/s$/, '')} record`;
     case 'UPDATE': {
+      const displayName = name || module.replace(/s$/, '');
       if (d?.field_changes) {
         const changes = filterNoiseFieldChanges(d.field_changes);
         const keys = Object.keys(changes);
-        if (keys.length === 0) return name ? `Updated ${module.replace(/s$/, '')} "${name}"` : `Updated ${module.replace(/s$/, '')} record`;
+        if (keys.length === 0) {
+          if (d.updated_fields) {
+            const updatedKeys = Object.keys(d.updated_fields).filter(k => !['id', 'created_at', 'updated_at', 'modified_at', 'modified_by', 'created_by'].includes(k));
+            if (updatedKeys.length === 1) {
+              return `Updated "${displayName}" — ${formatFieldName(updatedKeys[0])}: ${formatFieldValue(d.updated_fields[updatedKeys[0]])}`;
+            }
+            if (updatedKeys.length > 1) {
+              return `Updated "${displayName}" — ${updatedKeys.length} fields: ${updatedKeys.map(formatFieldName).join(', ')}`;
+            }
+          }
+          return `Updated ${module.replace(/s$/, '')} "${displayName}"`;
+        }
         if (keys.length === 1) {
           const field = keys[0];
           const change = changes[field];
-          return `Updated "${name || 'record'}" — ${formatFieldName(field)}: ${formatFieldValue(change.old)} → ${formatFieldValue(change.new)}`;
+          const oldVal = change.old;
+          const newVal = change.new;
+          if (oldVal === null || oldVal === undefined || oldVal === '') {
+            return `Updated "${displayName}" — ${formatFieldName(field)}: (unknown) → ${formatFieldValue(newVal)}`;
+          }
+          return `Updated "${displayName}" — ${formatFieldName(field)}: ${formatFieldValue(oldVal)} → ${formatFieldValue(newVal)}`;
         }
-        return `Updated "${name || 'record'}" — ${keys.length} fields changed`;
+        return `Updated "${displayName}" — ${keys.length} fields changed`;
       }
-      return name ? `Updated ${module.replace(/s$/, '')} "${name}"` : `Updated record`;
+      if (d?.updated_fields) {
+        const updatedKeys = Object.keys(d.updated_fields).filter(k => !['id', 'created_at', 'updated_at', 'modified_at', 'modified_by', 'created_by'].includes(k));
+        if (updatedKeys.length > 0) {
+          return `Updated "${displayName}" — ${updatedKeys.map(formatFieldName).join(', ')}`;
+        }
+      }
+      return `Updated ${module.replace(/s$/, '')} "${displayName}"`;
     }
     case 'DELETE':
       return name ? `Deleted ${module.replace(/s$/, '')} "${name}"` : `Deleted ${module.replace(/s$/, '')} record`;
+    case 'BULK_CREATE':
+      return `Bulk created ${d?.record_count || 'multiple'} ${module} records`;
+    case 'BULK_UPDATE': {
+      const bulkCount = d?.record_count ?? 'multiple';
+      const targetStatus = d?.update_data?.status || d?.status;
+      const titles = d?.update_data?.item_titles || d?.item_titles;
+      if (targetStatus && titles?.length) {
+        return `Marked ${bulkCount} ${module} as ${targetStatus}: ${titles.join(', ')}`;
+      }
+      if (targetStatus) {
+        return `Marked ${bulkCount} ${module} as ${targetStatus}`;
+      }
+      return `Bulk updated ${bulkCount} ${module} records${titles?.length ? ': ' + titles.join(', ') : ''}`;
+    }
     case 'BULK_DELETE':
-      return `Bulk deleted ${d?.count || 'multiple'} ${module} records`;
+      return `Bulk deleted ${d?.record_count || 'multiple'} ${module} records`;
+    case 'SETTINGS_UPDATE':
+      return `Updated ${module} settings`;
     case 'NOTE':
       return `Added note${name ? ` on ${module.replace(/s$/, '')}: "${d?.message?.substring(0, 40) || ''}"` : ''}`;
     case 'EMAIL':

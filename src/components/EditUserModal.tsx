@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+import { useSecurityAudit } from "@/hooks/useSecurityAudit";
 
 interface User {
   id: string;
@@ -27,6 +28,7 @@ const EditUserModal = ({ open, onClose, user, onSuccess }: EditUserModalProps) =
   const [displayName, setDisplayName] = useState('');
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
+  const { logSecurityEvent } = useSecurityAudit();
 
   useEffect(() => {
     if (user) {
@@ -57,6 +59,12 @@ const EditUserModal = ({ open, onClose, user, onSuccess }: EditUserModalProps) =
       if (error) throw error;
 
       if (data?.success) {
+        logSecurityEvent('USER_UPDATED', 'profiles', user.id, {
+          email: user.email,
+          updated_field: 'display_name',
+          new_value: displayName
+        });
+        
         toast({
           title: "Success",
           description: "User display name updated successfully",

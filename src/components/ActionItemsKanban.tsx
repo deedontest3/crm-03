@@ -75,15 +75,15 @@ const priorityConfig: Record<ActionItemPriority, {
 };
 
 const moduleIcons: Record<string, React.ElementType> = {
-  deals: Briefcase,
-  leads: UserCircle,
-  contacts: Building2
+  accounts: Building2,
+  contacts: UserCircle,
+  deals: Briefcase
 };
 
 const moduleLabels: Record<string, string> = {
-  deals: 'Deal',
-  leads: 'Lead',
-  contacts: 'Contact'
+  accounts: 'Account',
+  contacts: 'Contact',
+  deals: 'Deal'
 };
 
 // Helper functions

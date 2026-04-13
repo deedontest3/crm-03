@@ -314,7 +314,6 @@ export class GenericCSVProcessor {
     const requiredFields: Record<string, string[]> = {
       accounts: ['account_name'],
       contacts: ['contact_name'],
-      leads: ['lead_name'],
       deals: ['deal_name', 'stage']
     };
     

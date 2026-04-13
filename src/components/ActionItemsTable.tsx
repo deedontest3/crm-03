@@ -5,7 +5,8 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { MoreHorizontal, Pencil, Trash2, ArrowUpDown, ArrowUp, ArrowDown, CheckCircle, Handshake, UserPlus, Users } from 'lucide-react';
+import { MoreHorizontal, Pencil, Trash2, ArrowUpDown, ArrowUp, ArrowDown, CheckCircle, Handshake, UserPlus, Users, Megaphone } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip';
 import { format } from 'date-fns';
@@ -72,9 +73,10 @@ const statusConfig: Record<ActionItemStatus, {
   }
 };
 const moduleLabels: Record<string, string> = {
+  accounts: 'Account',
+  contacts: 'Contact',
   deals: 'Deal',
-  leads: 'Lead',
-  contacts: 'Contact'
+  campaigns: 'Campaign'
 };
 export function ActionItemsTable({
   actionItems,
@@ -92,6 +94,7 @@ export function ActionItemsTable({
   columnWidths,
   onColumnResize
 }: ActionItemsTableProps) {
+  const navigate = useNavigate();
   const {
     users,
     getUserDisplayName
@@ -185,16 +188,16 @@ export function ActionItemsTable({
           setSelectedDeal(data as Deal);
           setDealModalOpen(true);
         }
-      } else if (normalizedType === 'lead' || normalizedType === 'leads') {
-        // Leads are now deals at Lead stage - open as deal
+      } else if (normalizedType === 'account' || normalizedType === 'accounts') {
+        // Account records - just show a toast for now since no account modal exists in this context
         const { data } = await supabase
-          .from('deals')
+          .from('accounts')
           .select('*')
           .eq('id', moduleId)
           .maybeSingle();
         if (data) {
-          setSelectedDeal(data as Deal);
-          setDealModalOpen(true);
+          // Navigate or show account - for now just log
+          console.log('Account clicked:', data);
         }
       } else if (normalizedType === 'contact' || normalizedType === 'contacts') {
         const { data } = await supabase
@@ -450,7 +453,22 @@ export function ActionItemsTable({
 
                 {/* Module - icon only */}
                 <TableCell className="py-2 px-1 text-sm text-center" style={{ width: '6.67%', maxWidth: '6.67%' }}>
-                  {item.module_id && linkedRecordName ? (
+                  {item.module_type === 'campaigns' && item.module_id && linkedRecordName ? (
+                    <TooltipProvider delayDuration={200}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            onClick={e => { e.stopPropagation(); navigate(`/campaigns/${item.module_id}?tab=tasks`); }}
+                            className="h-7 px-2 flex items-center gap-1 rounded hover:bg-muted/50 text-primary mx-auto"
+                          >
+                            <Megaphone className="h-3.5 w-3.5" />
+                            <span className="text-xs truncate max-w-[80px]">{linkedRecordName}</span>
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">{linkedRecordName}</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  ) : item.module_id && linkedRecordName ? (
                     <TooltipProvider delayDuration={200}>
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -461,7 +479,7 @@ export function ActionItemsTable({
                             {(() => {
                               const t = item.module_type.toLowerCase();
                               if (t === 'deal' || t === 'deals') return <Handshake className="h-4 w-4" />;
-                              if (t === 'lead' || t === 'leads') return <UserPlus className="h-4 w-4" />;
+                              if (t === 'account' || t === 'accounts') return <UserPlus className="h-4 w-4" />;
                               if (t === 'contact' || t === 'contacts') return <Users className="h-4 w-4" />;
                               return <span className="text-xs">{t[0]?.toUpperCase()}</span>;
                             })()}

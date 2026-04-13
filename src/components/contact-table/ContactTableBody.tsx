@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { MoreHorizontal, Pencil, Trash2, ArrowUpDown, ArrowUp, ArrowDown, UserPlus, ListTodo } from "lucide-react";
+import { MoreHorizontal, Pencil, Trash2, ArrowUpDown, ArrowUp, ArrowDown, ListTodo } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { useUserDisplayNames } from "@/hooks/useUserDisplayNames";
 import { ContactColumnConfig } from "../ContactColumnCustomizer";
@@ -45,7 +45,6 @@ interface ContactTableBodyProps {
   sortField: string | null;
   sortDirection: 'asc' | 'desc';
   onSort: (field: string) => void;
-  onConvertToLead?: (contact: Contact) => void;
   onAddActionItem?: (contact: Contact) => void;
 }
 
@@ -71,7 +70,6 @@ export const ContactTableBody = ({
   sortField,
   sortDirection,
   onSort,
-  onConvertToLead,
   onAddActionItem
 }: ContactTableBodyProps) => {
   const [viewAccountName, setViewAccountName] = useState<string | null>(null);
@@ -318,12 +316,6 @@ export const ContactTableBody = ({
                           <Pencil className="h-4 w-4 mr-2" />
                           Edit
                         </DropdownMenuItem>
-                        {onConvertToLead && (
-                          <DropdownMenuItem onClick={() => onConvertToLead(contact)}>
-                            <UserPlus className="h-4 w-4 mr-2" />
-                            Convert to Lead
-                          </DropdownMenuItem>
-                        )}
                         {onAddActionItem && (
                           <DropdownMenuItem onClick={() => onAddActionItem(contact)}>
                             <ListTodo className="h-4 w-4 mr-2" />

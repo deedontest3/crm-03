@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { Eye, EyeOff } from "lucide-react";
+import { useSecurityAudit } from "@/hooks/useSecurityAudit";
 
 interface User {
   id: string;
@@ -29,6 +30,7 @@ const SetPasswordModal = ({ open, onClose, user, onSuccess }: SetPasswordModalPr
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
+  const { logSecurityEvent } = useSecurityAudit();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -78,6 +80,11 @@ const SetPasswordModal = ({ open, onClose, user, onSuccess }: SetPasswordModalPr
 
       if (data?.success) {
         console.log('Password set successfully:', data);
+        
+        logSecurityEvent('PASSWORD_RESET', 'users', user.id, {
+          email: user.email,
+          admin_initiated: true
+        });
         
         toast({
           title: "Password Updated",

@@ -79,7 +79,7 @@ export const AccountTable = ({
   ownerFilter = "all",
 }: AccountTableProps) => {
   const { toast } = useToast();
-  const { logDelete } = useCRUDAudit();
+  const { logDelete, logBulkDelete } = useCRUDAudit();
   const [pageAccounts, setPageAccounts] = useState<Account[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -198,6 +198,7 @@ export const AccountTable = ({
     try {
       const { error } = await supabase.from('accounts').delete().in('id', selectedAccounts);
       if (error) throw error;
+      await logBulkDelete('accounts', selectedAccounts.length, selectedAccounts);
       toast({ title: "Success", description: `${selectedAccounts.length} account${selectedAccounts.length !== 1 ? 's' : ''} deleted successfully` });
       setSelectedAccounts([]);
       fetchAccounts();

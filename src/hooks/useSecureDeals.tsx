@@ -28,7 +28,7 @@ export const useSecureDeals = () => {
   const [deals, setDeals] = useState<Deal[]>([]);
   const [loading, setLoading] = useState(true);
   const { secureQuery, secureExport } = useSecureDataAccess();
-  const { logDelete } = useCRUDAudit();
+  const { logUpdate, logDelete } = useCRUDAudit();
   const { toast } = useToast();
 
   const fetchDeals = async () => {
@@ -54,7 +54,19 @@ export const useSecureDeals = () => {
       console.log('Updates:', updates);
       
       // Get the existing deal for audit logging
-      const existingDeal = deals.find(d => d.id === id);
+      let existingDeal = deals.find(d => d.id === id);
+      
+      // If not found in local state, fetch from DB before update
+      if (!existingDeal) {
+        try {
+          const { data } = await supabase
+            .from('deals')
+            .select('*')
+            .eq('id', id)
+            .single();
+          if (data) existingDeal = data as Deal;
+        } catch { /* proceed without old data */ }
+      }
       
       const query = supabase
         .from('deals')
@@ -66,10 +78,12 @@ export const useSecureDeals = () => {
       const result = await secureQuery('deals', query, 'UPDATE');
       
       if (result.data) {
-        // Update local state
         setDeals(prev => prev.map(deal => 
           deal.id === id ? { ...deal, ...updates } : deal
         ));
+        
+        // Log the update with old/new values
+        await logUpdate('deals', id, updates, existingDeal || {});
         
         console.log('Deal updated successfully');
         toast({

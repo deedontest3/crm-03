@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+import { useSecurityAudit } from "@/hooks/useSecurityAudit";
 
 interface User {
   id: string;
@@ -23,6 +24,7 @@ interface DeleteUserDialogProps {
 const DeleteUserDialog = ({ open, onClose, user, onSuccess }: DeleteUserDialogProps) => {
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
+  const { logSecurityEvent } = useSecurityAudit();
 
   const handleDelete = async () => {
     if (!user) return;
@@ -49,6 +51,11 @@ const DeleteUserDialog = ({ open, onClose, user, onSuccess }: DeleteUserDialogPr
 
       if (data?.success) {
         console.log('User deletion successful:', data);
+        
+        logSecurityEvent('USER_DELETED', 'users', user.id, {
+          email: user.email,
+          name: user.user_metadata?.full_name
+        });
         
         toast({
           title: "Success",

@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Bell, Mail, MessageSquare, Clock, AlarmClock } from 'lucide-react';
+import { AlarmClock, Check, Mail, Bell, TrendingUp, ListChecks, Building2, Users } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import { useSecurityAudit } from '@/hooks/useSecurityAudit';
 
 interface NotificationPrefs {
   email_notifications: boolean;
@@ -30,7 +30,6 @@ interface NotificationsSectionProps {
   userTimezone?: string;
 }
 
-// Generate time options from 06:00 to 22:00 in 30-min intervals
 const TIME_OPTIONS = Array.from({ length: 33 }, (_, i) => {
   const totalMinutes = 6 * 60 + i * 30;
   const hours = Math.floor(totalMinutes / 60);
@@ -43,13 +42,14 @@ const TIME_OPTIONS = Array.from({ length: 33 }, (_, i) => {
 });
 
 const NotificationsSection = ({ notificationPrefs, setNotificationPrefs, userId, userTimezone }: NotificationsSectionProps) => {
-  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedRef = useRef<string>(JSON.stringify(notificationPrefs));
-  const [isSaving, setIsSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const { logSecurityEvent } = useSecurityAudit();
 
   const saveNotificationPrefs = useCallback(async (prefs: NotificationPrefs) => {
     if (!userId) return;
-    setIsSaving(true);
+    setSaveStatus('saving');
     try {
       const { error } = await supabase
         .from('notification_preferences')
@@ -72,11 +72,15 @@ const NotificationsSection = ({ notificationPrefs, setNotificationPrefs, userId,
         } as any, { onConflict: 'user_id' });
       if (error) throw error;
       lastSavedRef.current = JSON.stringify(prefs);
+      logSecurityEvent('SETTINGS_UPDATE', 'notification_preferences', undefined, {
+        updated_preferences: prefs
+      });
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus('idle'), 2000);
     } catch (error) {
       console.error('Error saving notification preferences:', error);
       toast.error('Failed to save notification preferences');
-    } finally {
-      setIsSaving(false);
+      setSaveStatus('idle');
     }
   }, [userId]);
 
@@ -93,18 +97,28 @@ const NotificationsSection = ({ notificationPrefs, setNotificationPrefs, userId,
   };
 
   return (
-    <div className="space-y-4">
-      {/* Delivery Methods */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Bell className="h-4 w-4" />
-            Delivery Methods
-          </CardTitle>
-          <CardDescription className="text-xs">Choose how you want to receive notifications</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between">
+    <div className="space-y-6">
+      {/* Save status indicator */}
+      {saveStatus !== 'idle' && (
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground animate-in fade-in duration-200">
+          {saveStatus === 'saving' && (
+            <span className="text-muted-foreground">Saving...</span>
+          )}
+          {saveStatus === 'saved' && (
+            <>
+            <Check className="h-3.5 w-3.5 text-primary" />
+              <span className="text-primary">Saved</span>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Delivery Channels */}
+      <div className="space-y-3">
+        <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Delivery Channels</h4>
+        <div className="rounded-lg border border-border bg-card divide-y divide-border">
+          {/* Email */}
+          <div className="flex items-center justify-between px-4 py-3">
             <div className="flex items-center gap-3">
               <Mail className="h-4 w-4 text-muted-foreground" />
               <div>
@@ -114,75 +128,58 @@ const NotificationsSection = ({ notificationPrefs, setNotificationPrefs, userId,
             </div>
             <Switch
               checked={notificationPrefs.email_notifications}
-              onCheckedChange={(checked) => updatePref('email_notifications', checked)}
+              onCheckedChange={(v) => updatePref('email_notifications', v)}
             />
           </div>
-          <div className="flex items-center justify-between">
+
+          {/* In-App */}
+          <div className="flex items-center justify-between px-4 py-3">
             <div className="flex items-center gap-3">
-              <MessageSquare className="h-4 w-4 text-muted-foreground" />
+              <Bell className="h-4 w-4 text-muted-foreground" />
               <div>
                 <Label className="text-sm font-medium">In-App Notifications</Label>
-                <p className="text-xs text-muted-foreground">Show notifications within the app</p>
+                <p className="text-xs text-muted-foreground">Show notifications in the app</p>
               </div>
             </div>
             <Switch
               checked={notificationPrefs.in_app_notifications}
-              onCheckedChange={(checked) => updatePref('in_app_notifications', checked)}
+              onCheckedChange={(v) => updatePref('in_app_notifications', v)}
             />
           </div>
-        </CardContent>
-      </Card>
 
-      {/* Delivery Frequency */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Clock className="h-4 w-4" />
-            Delivery Frequency
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Select
-            value={notificationPrefs.notification_frequency}
-            onValueChange={(value) => updatePref('notification_frequency', value)}
-          >
-            <SelectTrigger className="w-full max-w-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="instant">Instant</SelectItem>
-              <SelectItem value="daily">Daily Digest</SelectItem>
-              <SelectItem value="weekly">Weekly Digest</SelectItem>
-            </SelectContent>
-          </Select>
-        </CardContent>
-      </Card>
+          {/* Frequency */}
+          <div className="flex items-center justify-between px-4 py-3">
+            <div>
+              <Label className="text-sm font-medium">Frequency</Label>
+              <p className="text-xs text-muted-foreground">How often to receive notifications</p>
+            </div>
+            <Select value={notificationPrefs.notification_frequency} onValueChange={(v) => updatePref('notification_frequency', v)}>
+              <SelectTrigger className="w-[130px] h-8 text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="instant">Instant</SelectItem>
+                <SelectItem value="daily">Daily Digest</SelectItem>
+                <SelectItem value="weekly">Weekly</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
 
-      {/* Daily Reminder Time - shown when task_reminders is enabled */}
-      {notificationPrefs.task_reminders && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <AlarmClock className="h-4 w-4" />
-              Daily Action Item Reminder
-            </CardTitle>
-            <CardDescription className="text-xs">
-              Get a daily summary of your pending action items at your preferred time
-              {userTimezone && (
-                <span className="block mt-1 text-muted-foreground">
-                  Timezone: <span className="font-medium">{userTimezone}</span>
-                </span>
-              )}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center gap-3">
-              <Label className="text-sm font-medium whitespace-nowrap">Reminder Time</Label>
-              <Select
-                value={notificationPrefs.daily_reminder_time}
-                onValueChange={(value) => updatePref('daily_reminder_time', value)}
-              >
-                <SelectTrigger className="w-[160px]">
+          {/* Daily Reminder Time - only show when task reminders are on */}
+          {notificationPrefs.task_reminders && (
+            <div className="flex items-center justify-between px-4 py-3">
+              <div className="flex items-center gap-3">
+                <AlarmClock className="h-4 w-4 text-muted-foreground" />
+                <div>
+                  <Label className="text-sm font-medium">Daily Reminder Time</Label>
+                  <p className="text-xs text-muted-foreground">
+                    When to send action item reminders
+                    {userTimezone && <span className="ml-1">({userTimezone})</span>}
+                  </p>
+                </div>
+              </div>
+              <Select value={notificationPrefs.daily_reminder_time} onValueChange={(v) => updatePref('daily_reminder_time', v)}>
+                <SelectTrigger className="w-[120px] h-8 text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -192,85 +189,90 @@ const NotificationsSection = ({ notificationPrefs, setNotificationPrefs, userId,
                 </SelectContent>
               </Select>
             </div>
-          </CardContent>
-        </Card>
-      )}
+          )}
+        </div>
+      </div>
 
-      {/* Module Notifications */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Module Notifications</CardTitle>
-          <CardDescription className="text-xs">Choose which modules you want to receive notifications from</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex items-center justify-between">
-            <Label className="text-sm">Leads</Label>
-            <Switch
-              checked={notificationPrefs.leads_notifications}
-              onCheckedChange={(checked) => updatePref('leads_notifications', checked)}
-            />
-          </div>
-          <div className="flex items-center justify-between">
-            <Label className="text-sm">Contacts</Label>
-            <Switch
-              checked={notificationPrefs.contacts_notifications}
-              onCheckedChange={(checked) => updatePref('contacts_notifications', checked)}
-            />
-          </div>
-          <div className="flex items-center justify-between">
-            <Label className="text-sm">Accounts</Label>
-            <Switch
-              checked={notificationPrefs.accounts_notifications}
-              onCheckedChange={(checked) => updatePref('accounts_notifications', checked)}
-            />
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Event Triggers */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Event Triggers</CardTitle>
-          <CardDescription className="text-xs">Choose which events should trigger notifications</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex items-center justify-between">
-            <Label className="text-sm">Lead Assigned</Label>
-            <Switch
-              checked={notificationPrefs.lead_assigned}
-              onCheckedChange={(checked) => updatePref('lead_assigned', checked)}
-            />
-          </div>
-          <div className="flex items-center justify-between">
-            <Label className="text-sm">Deal Updates</Label>
+      {/* Notify Me About */}
+      <div className="space-y-3">
+        <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Notify Me About</h4>
+        <div className="rounded-lg border border-border bg-card divide-y divide-border">
+          {/* Deal Stage Changes */}
+          <div className="flex items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-3">
+              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+              <div>
+                <Label className="text-sm font-medium">Deal Stage Changes</Label>
+                <p className="text-xs text-muted-foreground">When a deal moves to a new stage</p>
+              </div>
+            </div>
             <Switch
               checked={notificationPrefs.deal_updates}
-              onCheckedChange={(checked) => updatePref('deal_updates', checked)}
+              onCheckedChange={(v) => updatePref('deal_updates', v)}
             />
           </div>
-          <div className="flex items-center justify-between">
-            <Label className="text-sm">Action Item Reminders</Label>
+
+          {/* Action Item Reminders */}
+          <div className="flex items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-3">
+              <ListChecks className="h-4 w-4 text-muted-foreground" />
+              <div>
+                <Label className="text-sm font-medium">Action Item Reminders</Label>
+                <p className="text-xs text-muted-foreground">Overdue and high-priority task alerts</p>
+              </div>
+            </div>
             <Switch
               checked={notificationPrefs.task_reminders}
-              onCheckedChange={(checked) => updatePref('task_reminders', checked)}
+              onCheckedChange={(v) => updatePref('task_reminders', v)}
             />
           </div>
-          <div className="flex items-center justify-between">
-            <Label className="text-sm">Meeting Reminders</Label>
+
+          {/* Account Updates */}
+          <div className="flex items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-3">
+              <Building2 className="h-4 w-4 text-muted-foreground" />
+              <div>
+                <Label className="text-sm font-medium">Account Updates</Label>
+                <p className="text-xs text-muted-foreground">Changes to accounts you own or follow</p>
+              </div>
+            </div>
             <Switch
-              checked={notificationPrefs.meeting_reminders}
-              onCheckedChange={(checked) => updatePref('meeting_reminders', checked)}
+              checked={notificationPrefs.accounts_notifications}
+              onCheckedChange={(v) => updatePref('accounts_notifications', v)}
             />
           </div>
-          <div className="flex items-center justify-between">
-            <Label className="text-sm">Weekly Digest</Label>
+
+          {/* Contact Updates */}
+          <div className="flex items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-3">
+              <Users className="h-4 w-4 text-muted-foreground" />
+              <div>
+                <Label className="text-sm font-medium">Contact Updates</Label>
+                <p className="text-xs text-muted-foreground">Changes to contacts you own or follow</p>
+              </div>
+            </div>
             <Switch
-              checked={notificationPrefs.weekly_digest}
-              onCheckedChange={(checked) => updatePref('weekly_digest', checked)}
+              checked={notificationPrefs.contacts_notifications}
+              onCheckedChange={(v) => updatePref('contacts_notifications', v)}
             />
           </div>
-        </CardContent>
-      </Card>
+
+          {/* Deals module (mapped to leads_notifications DB column) */}
+          <div className="flex items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-3">
+              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+              <div>
+                <Label className="text-sm font-medium">Deal Notifications</Label>
+                <p className="text-xs text-muted-foreground">All deal-related activity notifications</p>
+              </div>
+            </div>
+            <Switch
+              checked={notificationPrefs.leads_notifications}
+              onCheckedChange={(v) => updatePref('leads_notifications', v)}
+            />
+          </div>
+        </div>
+      </div>
     </div>
   );
 };
