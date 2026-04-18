@@ -155,8 +155,8 @@ export default function CampaignDetail() {
       <div className="flex-shrink-0 h-16 px-6 border-b bg-background flex items-center justify-between">
         <div className="flex items-center gap-3 min-w-0">
           <div className="min-w-0">
-            <h1 className="text-lg font-semibold text-foreground truncate">{campaign.campaign_name}</h1>
-            <p className="text-xs text-muted-foreground truncate">
+            <h1 className="text-xl font-semibold text-foreground truncate">{campaign.campaign_name}</h1>
+            <p className="text-sm text-muted-foreground truncate">
               {campaign.campaign_type} · Owner: {campaign.owner ? displayNames[campaign.owner] || "—" : "—"}
               {campaign.start_date && campaign.end_date && (
                 <> · {format(new Date(campaign.start_date + "T00:00:00"), "dd MMM yyyy")} → {format(new Date(campaign.end_date + "T00:00:00"), "dd MMM yyyy")}</>
@@ -215,13 +215,13 @@ export default function CampaignDetail() {
       </div>
 
       {/* 4 Tabs */}
-      <div className="flex-1 overflow-hidden px-4 pt-2 pb-3">
+      <div className="flex-1 overflow-hidden px-6 pt-3 pb-4">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
-          <TabsList className="w-full grid grid-cols-4 h-8">
-            <TabsTrigger value="overview" className="text-xs h-7">Overview</TabsTrigger>
-            <TabsTrigger value="setup" className="text-xs h-7">Setup</TabsTrigger>
-            <TabsTrigger value="monitoring" className="text-xs h-7">Monitoring</TabsTrigger>
-            <TabsTrigger value="actionItems" className="text-xs h-7">Action Items</TabsTrigger>
+          <TabsList className="w-full grid grid-cols-4 h-10">
+            <TabsTrigger value="overview" className="text-sm h-9">Overview</TabsTrigger>
+            <TabsTrigger value="setup" className="text-sm h-9">Setup</TabsTrigger>
+            <TabsTrigger value="monitoring" className="text-sm h-9">Monitoring</TabsTrigger>
+            <TabsTrigger value="actionItems" className="text-sm h-9">Action Items</TabsTrigger>
           </TabsList>
 
           <div className="flex-1 overflow-auto mt-3">
