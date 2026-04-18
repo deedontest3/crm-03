@@ -132,20 +132,10 @@ export function AddContactsModal({ open, onOpenChange, campaignId, forAccount, e
               onClick={() => toggleSelect(contact.id)}
             >
               <Checkbox checked={selectedIds.includes(contact.id)} />
-              <div className="flex-1 min-w-0 flex items-center gap-2 text-sm">
+              <div className="flex-1 min-w-0 grid grid-cols-3 gap-2 text-sm items-center">
                 <span className="font-medium truncate">{contact.contact_name}</span>
-                {contact.company_name && (
-                  <>
-                    <span className="text-muted-foreground/50">·</span>
-                    <span className="text-xs text-muted-foreground truncate">{contact.company_name}</span>
-                  </>
-                )}
-                {contact.email && (
-                  <>
-                    <span className="text-muted-foreground/50">·</span>
-                    <span className="text-xs text-muted-foreground truncate">{contact.email}</span>
-                  </>
-                )}
+                <span className="text-xs text-muted-foreground truncate">{contact.company_name || "—"}</span>
+                <span className="text-xs text-muted-foreground truncate">{contact.email || "—"}</span>
               </div>
               {contact.linkedin && (
                 <span className="text-[10px] text-primary uppercase tracking-wide flex-shrink-0">in</span>
