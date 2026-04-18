@@ -1,81 +1,64 @@
 
 
-Let me explore the current Overview page and related campaign data to understand what's available and what could be more valuable.
-<lov-tool-use id="toolu_vrtx_01VkDGyLQ3BTa8x4T7hHo4L8" name="code--view" integration-id="code" data="{\"file_path\": \"src/components/campaigns/CampaignOverview.tsx\"}">
-</lov-tool-use>
+## Improve /campaigns Dashboard
 
-<lov-tool-use id="toolu_vrtx_01JK7nD1Ts2DFnY8ruXrsNNw" name="code--view" integration-id="code" data="{\"file_path\": \"src/hooks/useCampaigns.tsx\"}">
-</lov-tool-use>
+### Current Bugs & Issues Found
+1. **Activity Summary card too wide** — takes 8/12 columns but only shows 3 small stat rows; pie chart cramped at 4/12.
+2. **Stats use `campaigns` (filtered to active) but the count badge in header shows `campaigns.length`** — both exclude archived; that's fine, but stat cards say "Total" which is misleading. Should be "Total Active".
+3. **Communication count is undifferentiated** — 22 comms exist split across Email/Call/Phone/LinkedIn but dashboard shows one number, losing channel insight.
+4. **No time-based insight** — no trend of campaigns created over months, no upcoming/ending soon view.
+5. **No engagement metrics** — email replied/sent/failed counts exist in `campaign_communications.email_status` but not surfaced.
+6. **No top-performing campaigns** — table shows all 8 unsorted; missing "by activity" or "by reply rate".
+7. **Aggregates re-fetched only on `campaigns.length` change** — won't refresh when comms/accounts added; should use react-query for cache invalidation consistency.
+8. **Pie chart click filter only filters the table — stat card "Total" highlight logic is buggy** (always shows ring when no filter).
+9. **Strategy column** in dashboard table doesn't visually convey progress (just "0/4" text) — should be a tiny progress bar.
+10. **No "ending soon" / "overdue" alerts** — campaigns past `end_date` but still Active aren't flagged.
 
-<lov-tool-use id="toolu_vrtx_01Si9KAdnu63aCWATLwMuHw1" name="code--view" integration-id="code" data="{\"file_path\": \"src/components/campaigns/CampaignOverview.tsx\"}">
-</lov-tool-use>
-
-<lov-tool-use id="toolu_vrtx_0123oshYKZx3A5SLivuxkZM4" name="code--view" integration-id="code" data="{\"file_path\": \"src/hooks/useCampaigns.tsx\"}">
-</lov-tool-use>
-<lov-plan>
-
-# Campaign Overview – Smarter Widgets & Charts
-
-## What's wrong with the current Contact Funnel
-- Bars are sized relative to the **largest stage**, so a single "Responded" looks like a full bar while 0s look identical to small numbers — visually misleading.
-- It doesn't behave like a real funnel (each stage should be ≤ previous). Today every contact only ever sits in one stage, so "Not Contacted = 50, Contacted = 0, Responded = 1" is meaningless as a funnel.
-- No conversion rates between stages, no totals, no comparison with outreach actually sent.
-
-## Fix the Funnel + add meaningful widgets
-
-### 1. Replace "Contact Funnel" with a true **Engagement Funnel**
-Compute cumulative counts (each stage rolls up the next):
-- **Total Contacts** = all contacts
-- **Contacted** = Contacted + Responded + Qualified + Converted (anyone who has been reached)
-- **Responded** = Responded + Qualified + Converted
-- **Qualified** = Qualified + Converted
-- **Converted** = Converted
-
-Display as a proper descending funnel with:
-- Bar width = % of Total Contacts (not relative to max)
-- Each row shows count, % of total, and **conversion % from previous stage** (e.g. "32% of Contacted responded")
-- Color gradient slate → blue → amber → purple → emerald
-
-### 2. New widget: **Outreach Channel Mix** (donut)
-Shows split between Email / Call / LinkedIn with counts and %. Replaces the cramped "✉ ☎ in" subtext on the Outreach KPI. Uses recharts `PieChart`.
-
-### 3. New widget: **Response Rate by Channel** (horizontal bars)
-For each channel: messages sent vs responses received → response rate %. Helps user see which channel is actually working.
-
-### 4. New widget: **Top Engaged Accounts** (list, top 5)
-Ranked by number of communications + contacts that responded. Click → jumps to Setup tab. Shows account name, # contacts, # touches, response badge.
-
-### 5. New widget: **Campaign Health** card
-At-a-glance KPIs:
-- Days remaining / total days (progress bar)
-- Coverage: % of contacts contacted at least once
-- Avg touches per contact
-- Pipeline value (sum of deal values from this campaign)
-
-### 6. Improve **Outreach Activity** chart
-- Add stacked series per channel (Email / Call / LinkedIn) instead of a single line
-- Switch from weekly area to stacked bar by week — easier to read mix over time
-
-### 7. Keep Recent Activity & Campaign Details (already good)
-
-## New layout (top → bottom)
+### Proposed Layout (12-col grid)
 
 ```text
-[ KPI strip — 6 cards ]                                  (unchanged)
+[Stat Cards: Total | Active | Draft | Completed | Paused]   (5 small cards)
 
-[ Engagement Funnel        7 ] [ Channel Mix donut    5 ]
-[ Response Rate by Channel 7 ] [ Campaign Health      5 ]
-[ Outreach Activity (stacked, full width)              ]
-[ Top Engaged Accounts 7   ] [ Recent Activity     5  ]
-[ Campaign Details (full width, unchanged)             ]
+[Status Pie 3] [Channel Mix Bar 3] [Email Engagement 3] [Quick Stats 3]
+   donut          horiz bars         donut + numbers       4 mini stats:
+                                                             Accounts / Contacts
+                                                             Comms / Avg per camp
+
+[Campaigns Timeline 6]              [Top Active Campaigns 6]
+   Bar chart: created per month       List sorted by communications count
+                                       with mini progress + reply rate
+
+[All Campaigns Table — full width]
+   Existing table + new "Engagement" column (replies/sent),
+   Strategy as mini progress bar, sortable headers
 ```
 
-## Files to edit
-| File | Change |
-|---|---|
-| `src/components/campaigns/CampaignOverview.tsx` | Replace funnel logic with cumulative funnel; add ChannelMix donut, ResponseRateByChannel, CampaignHealth, TopEngagedAccounts widgets; convert timeline to stacked bar by channel; restructure grid |
+### Changes to `src/components/campaigns/CampaignDashboard.tsx`
 
-## Out of scope
-- No DB / hook changes — all derived from already-fetched `accounts`, `contacts`, `communications`, `deals`.
-- No changes to Setup / Monitoring tabs.
+**Add new aggregates fetched once**:
+- `commsBycamp` split by `communication_type` (Email/Call/Phone/LinkedIn)
+- `emailStatusCounts` (Sent / Replied / Failed) globally
+- `repliesBycamp` (count where `email_status='Replied'`)
+- `createdByMonth` derived from campaigns
+
+**New widgets**:
+1. **Channel Mix** (horizontal bar chart): Email vs Call vs Phone vs LinkedIn comms.
+2. **Email Engagement** (compact donut + numbers): Sent / Replied / Failed with reply-rate %.
+3. **Quick Stats** (2x2 grid): Accounts Targeted, Contacts Added, Total Comms, Avg Comms/Campaign.
+4. **Campaign Timeline** (bar chart): campaigns created per month over last 6 months.
+5. **Top Active Campaigns** (sorted list): top 5 by communication count, each row shows name, comms count, reply rate, mini MART progress.
+
+**Bug fixes**:
+- Replace single broad "Activity Summary" with the 4-tile row above (fixes width issue).
+- Fix "Total" ring logic: only highlight when explicitly clicked, not by default.
+- Add ending-soon banner if any active campaign has `end_date` within 7 days or past due.
+- Add Strategy mini progress bar in table.
+- Add "Engagement" column to table (e.g. `5/16 replies`).
+- Switch aggregate `useEffect` to a `useQuery` keyed on `["campaign-aggregates"]` so it invalidates with other campaign mutations.
+
+### File
+
+| File | Action |
+|---|---|
+| `src/components/campaigns/CampaignDashboard.tsx` | Rewrite layout: 4-tile chart row + timeline + top campaigns + improved table |
 
