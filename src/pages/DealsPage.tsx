@@ -1,7 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
-import { fetchAllRecords } from "@/utils/supabasePagination";
 import { useAuth } from "@/hooks/useAuth";
 import { Deal, DealStage } from "@/types/deal";
 import { KanbanBoard } from "@/components/KanbanBoard";
@@ -17,6 +17,7 @@ const DealsPage = () => {
   const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const { logCreate, logUpdate, logDelete, logBulkDelete } = useCRUDAudit();
   
   // URL params for highlight from notifications
@@ -24,30 +25,55 @@ const DealsPage = () => {
   const highlightId = searchParams.get('highlight');
   const [highlightProcessed, setHighlightProcessed] = useState(false);
   
-  const [deals, setDeals] = useState<Deal[]>([]);
-  const [loading, setLoading] = useState(true);
   const [selectedDeal, setSelectedDeal] = useState<Deal | null>(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [initialStage, setInitialStage] = useState<DealStage>('Lead');
   const [activeView, setActiveView] = useState<'kanban' | 'list'>('kanban');
 
-  const fetchDeals = async () => {
-    try {
-      setLoading(true);
-      const allDeals = await fetchAllRecords<Deal>('deals', 'modified_at', false);
-      setDeals(allDeals as unknown as Deal[]);
-    } catch (error) {
-      console.error('Error fetching deals:', error);
-      toast({
-        title: "Error",
-        description: "Failed to fetch deals",
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Cached deals query — paginates internally to bypass 1000-row supabase limit
+  const dealsQuery = useQuery({
+    queryKey: ['deals-all'],
+    enabled: !!user,
+    staleTime: 2 * 60 * 1000,
+    queryFn: async (): Promise<Deal[]> => {
+      const PAGE = 1000;
+      let from = 0;
+      const all: Deal[] = [];
+      // Loop until fewer than PAGE rows returned
+      // Using select('*') here keeps full deal objects (modal needs them); narrowing
+      // is best done at view-level. This is now cached for 2 min via React Query.
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { data, error } = await supabase
+          .from('deals')
+          .select('*')
+          .order('modified_at', { ascending: false })
+          .range(from, from + PAGE - 1);
+        if (error) throw error;
+        const batch = (data || []) as unknown as Deal[];
+        all.push(...batch);
+        if (batch.length < PAGE) break;
+        from += PAGE;
+      }
+      return all;
+    },
+  });
+
+  const deals = dealsQuery.data || [];
+  const loading = dealsQuery.isLoading;
+
+  const fetchDeals = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: ['deals-all'] });
+  }, [queryClient]);
+
+  // Local helper to update deals cache without refetching
+  const setDeals = useCallback(
+    (updater: (prev: Deal[]) => Deal[]) => {
+      queryClient.setQueryData<Deal[]>(['deals-all'], (prev) => updater(prev || []));
+    },
+    [queryClient]
+  );
 
   const handleUpdateDeal = async (dealId: string, updates: Partial<Deal>) => {
     try {

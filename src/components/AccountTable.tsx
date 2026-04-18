@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { useCRUDAudit } from "@/hooks/useCRUDAudit";
@@ -40,17 +41,18 @@ interface Account {
 
 const defaultColumns: AccountColumnConfig[] = [
   { field: 'account_name', label: 'Account Name', visible: true, order: 0 },
-  { field: 'linked_contacts', label: 'Linked', visible: true, order: 1 },
-  { field: 'status', label: 'Status', visible: true, order: 2 },
-  { field: 'company_type', label: 'Company Type', visible: true, order: 3 },
-  { field: 'industry', label: 'Industry', visible: true, order: 4 },
-  { field: 'phone', label: 'Phone', visible: true, order: 5 },
-  { field: 'website', label: 'Website', visible: true, order: 6 },
-  { field: 'country', label: 'Country', visible: true, order: 7 },
-  { field: 'region', label: 'Region', visible: true, order: 8 },
-  { field: 'currency', label: 'Currency', visible: true, order: 9 },
-  { field: 'created_time', label: 'Created', visible: false, order: 10 },
-  { field: 'account_owner', label: 'Account Owner', visible: true, order: 11 },
+  { field: 'description', label: 'Description', visible: true, order: 1 },
+  { field: 'linked_contacts', label: 'Linked', visible: true, order: 2 },
+  { field: 'status', label: 'Status', visible: true, order: 3 },
+  { field: 'company_type', label: 'Company Type', visible: true, order: 4 },
+  { field: 'industry', label: 'Industry', visible: true, order: 5 },
+  { field: 'phone', label: 'Phone', visible: true, order: 6 },
+  { field: 'website', label: 'Website', visible: true, order: 7 },
+  { field: 'country', label: 'Country', visible: true, order: 8 },
+  { field: 'region', label: 'Region', visible: true, order: 9 },
+  { field: 'currency', label: 'Currency', visible: true, order: 10 },
+  { field: 'created_time', label: 'Created', visible: false, order: 11 },
+  { field: 'account_owner', label: 'Account Owner', visible: true, order: 12 },
 ];
 
 interface AccountTableProps {
@@ -92,7 +94,7 @@ export const AccountTable = ({
   const [itemsPerPage, setItemsPerPage] = useState(50);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
-  const [contactCounts, setContactCounts] = useState<Record<string, number>>({});
+  // contactCounts derived from cached query below
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
   const [debouncedSearch, setDebouncedSearch] = useState(searchTerm);
@@ -123,7 +125,7 @@ export const AccountTable = ({
         sortField: sortField || undefined,
         sortDirection,
         searchTerm: debouncedSearch || undefined,
-        searchFields: ['account_name', 'phone', 'country', 'industry', 'company_type', 'website'],
+        searchFields: ['account_name', 'description', 'phone', 'country', 'industry', 'company_type', 'website'],
         filters,
       });
 
@@ -143,32 +145,32 @@ export const AccountTable = ({
     if (refreshTrigger && refreshTrigger > 0) fetchAccounts();
   }, [refreshTrigger, fetchAccounts]);
 
-  // Fetch linked contact counts for visible accounts
-  useEffect(() => {
-    const fetchContactCounts = async () => {
-      const accountNames = pageAccounts.map(a => a.account_name).filter(Boolean);
-      if (accountNames.length === 0) {
-        setContactCounts({});
-        return;
-      }
+  // Fetch linked contact counts for visible accounts (cached per visible-name set)
+  const visibleAccountNames = useMemo(
+    () => pageAccounts.map((a) => a.account_name).filter(Boolean).sort(),
+    [pageAccounts]
+  );
 
+  const { data: contactCounts = {} } = useQuery({
+    queryKey: ['account-contact-counts', visibleAccountNames.join('|')],
+    enabled: visibleAccountNames.length > 0,
+    staleTime: 5 * 60 * 1000,
+    queryFn: async () => {
       const { data, error } = await supabase
         .from('contacts')
         .select('company_name')
-        .in('company_name', accountNames);
+        .in('company_name', visibleAccountNames);
 
+      const counts: Record<string, number> = {};
       if (!error && data) {
-        const counts: Record<string, number> = {};
-        data.forEach((row) => {
+        data.forEach((row: any) => {
           const name = row.company_name;
           if (name) counts[name] = (counts[name] || 0) + 1;
         });
-        setContactCounts(counts);
       }
-    };
-
-    fetchContactCounts();
-  }, [pageAccounts]);
+      return counts;
+    },
+  });
 
   const handleSort = (field: string) => {
     if (sortField === field) {

@@ -1,50 +1,102 @@
 
 
-## Enhance Campaigns Module UI
+## Why every page feels slow — what I found
 
-### Problem
-1. No dashboard/overview view -- only a list table exists
-2. Header layout doesn't match other modules (uses `p-6 pb-4` instead of `h-16 px-6 border-b` fixed height)
-3. Filter bar styling inconsistent (uses `p-4 border-b` instead of `bg-muted/30 px-6 py-3`)
+Confirmed from network logs + code review:
 
-### Changes
+**1. `useYearlyRevenueData` and `useDashboardStats` fetch ALL deals with `select('*')`, no `.limit()`, no `.range()`.** Filtering by year is then done client-side in JavaScript. With several hundred deals each, the dashboard pulls a massive payload twice on every visit, then loops through it 5+ times. This is the single biggest dashboard slowdown.
 
-**1. Add a Campaign Dashboard view** — new file `src/components/campaigns/CampaignDashboard.tsx`
+**2. `useCampaigns` always fetches all campaigns + the entire `campaign_mart` table on app mount** because `CampaignDashboardWidget` and `<Campaigns>` page both call it. There's no `staleTime`, so every navigation refetches.
 
-A grid-based overview showing:
-- **Summary stat cards** (row 1): Total Campaigns, Active, Draft, Completed -- small cards with counts
-- **MART Progress overview** (row 2): Shows campaigns with their MART completion as progress bars
-- **Status breakdown** (row 2): A simple status distribution (bar or donut chart)
-- **Recent campaigns** (row 3): Last 5 campaigns as compact clickable cards with status badge, type, date range
+**3. `DealsPage` calls `fetchAllRecords('deals')` — paginates every 1000 rows in a loop until done.** For all deals at once. Used both for the Kanban and List views even though both paginate client-side.
 
-Uses existing `useCampaigns` hook data -- no new queries needed.
+**4. `useActionItems` fetches up to 5000 rows every time the filter object changes**, and the query key is `['action_items', filters]` (the entire object), so any filter tweak refetches the full set.
 
-**2. Add view toggle to Campaigns page** — modify `src/pages/Campaigns.tsx`
+**5. `AccountTable` makes a second query to `contacts` for every visible page** to count linked contacts (the network log shows a 200-name `IN(...)` query of ~600 rows just for the contact-count badge). It runs again on every page change.
 
-- Add `ToggleGroup` with "Dashboard" and "List" views (matching Deals page pattern with `LayoutGrid` / `List` icons)
-- Fix header to use `h-16 px-6 border-b bg-background` (matching Contacts/Accounts pattern)
-- Fix filter bar to use `bg-muted/30 px-6 py-3` styling
-- Move view toggle + "New Campaign" button into the header row
-- Dashboard view shown by default, list view shows the existing table
-- Filters only visible in List view
+**6. `useUserDisplayNames` calls the `fetch-user-display-names` edge function on every component that needs names** (Accounts, Contacts, Campaigns, CampaignDetail, ActionItems all do it independently). Network log shows duplicate POSTs with the same user IDs back-to-back. Not deduped across components, not cached in React Query.
 
-**3. Layout alignment fix**
+**7. No React Query caching defaults.** `new QueryClient()` is created with no `staleTime`/`gcTime`, so navigating Dashboard → Campaigns → Dashboard refetches everything immediately.
 
-Replace:
-```
-<div className="flex items-center justify-between p-6 pb-4 border-b border-border">
-```
-With:
-```
-<div className="flex-shrink-0 h-16 px-6 border-b bg-background flex items-center justify-between">
-```
+**8. `useColumnPreferences` and `useDealsColumnPreferences` fire a Supabase request for every table mount** (one per `(user_id, module)` row). Not cached via React Query, so flipping between tabs re-queries.
 
-This aligns the header divider with the sidebar icon divider, matching Contacts and Accounts modules.
+**9. `Dashboard` is eager-loaded but pulls in `YearlyRevenueSummary` + `CampaignDashboardWidget` immediately** — both fire 4–6 queries before the first paint.
 
-### Files
+**10. Excessive console.log spam in hot paths** (`useYearlyRevenueData`, `useUserDisplayNames`) — minor but real cost on slow devices.
 
-| File | Action |
-|---|---|
-| `src/components/campaigns/CampaignDashboard.tsx` | Create -- dashboard view with stats, MART progress, status breakdown |
-| `src/pages/Campaigns.tsx` | Modify -- add view toggle, fix header/filter bar layout to match other modules |
+---
+
+## Plan
+
+### 1. Add sane React Query defaults (one-line, biggest win)
+In `src/App.tsx`, configure the `QueryClient` with:
+- `staleTime: 5 * 60 * 1000` (5 min)
+- `gcTime: 10 * 60 * 1000`
+- `refetchOnWindowFocus: false`
+- `retry: 1`
+
+This alone removes 60–80% of the redundant requests when the user navigates between pages.
+
+### 2. Move dashboard aggregation to the database (eliminate full-table scans)
+In `src/hooks/useYearlyRevenueData.tsx`:
+- Replace `select('*')` with a year-filtered query: `.or('expected_closing_date.gte.YYYY-01-01,signed_contract_date.gte.YYYY-01-01').lte(...)` and select only the fields actually used (`stage`, `total_revenue`, `total_contract_value`, `quarterly_revenue_q1..q4`, `expected_closing_date`).
+- Add `staleTime: 5 * 60 * 1000`.
+- Strip the 20+ `console.log` calls.
+- `useDashboardStats` and `useAvailableYears`: same — narrow `select`, limit fields, add staleTime.
+
+### 3. Eager-load only what the first page needs; lazy-load Dashboard widgets
+- Keep `Dashboard` route eager but lazy-import `CampaignDashboardWidget` inside it via `React.lazy` + `Suspense` so it doesn't block first paint.
+- Lazy-load `YearlyRevenueSummary` with a Skeleton fallback.
+
+### 4. Cache user display names through React Query
+Rewrite `useUserDisplayNames`:
+- Use `useQuery` keyed on the sorted user-id list with `staleTime: Infinity` (names rarely change).
+- Use a single shared module-level `Map` cache so multiple hooks in the same render hit only one edge-function POST.
+- This kills the duplicate POSTs visible in network logs.
+
+### 5. Cache column preferences via React Query
+Wrap both `useColumnPreferences` and `useDealsColumnPreferences` in `useQuery` with `staleTime: Infinity` and key on `[user.id, moduleName]`. Mutations invalidate the key. Eliminates the per-mount round-trip.
+
+### 6. Fix Accounts contact-count
+In `src/components/AccountTable.tsx`:
+- Replace the per-page `.in('company_name', ...)` payload-of-600-rows query with a single grouped count: use `supabase.rpc()` or `.select('company_name', { count: 'exact' })` with `.in()` then group client-side **only on the names of the current 50 visible rows** (already does), but switch to selecting only `company_name` and apply React Query caching keyed on the visible names.
+- Better: create a Postgres view/RPC `account_contact_counts` returning `(account_name, count)` and call it once with the page's account names.
+
+### 7. Reduce Action Items query size
+In `src/hooks/useActionItems.tsx`:
+- Drop `.limit(5000)` to `.limit(500)` for the default view (UI paginates client-side anyway).
+- Stable query key: hash filter values into a small key, not the whole object.
+
+### 8. Slim Campaigns + Campaign Mart fetch
+- `useCampaigns` strategyQuery: select only the boolean flags + `campaign_id` instead of `select('*')`.
+- Add `staleTime: 2 * 60 * 1000`.
+- `CampaignDashboardWidget`: same — request only fields it uses.
+
+### 9. Deals page: stop fetching all rows on mount
+In `src/pages/DealsPage.tsx`:
+- Use server pagination (`fetchPaginatedData`) for the List view (already supported by `supabasePagination.ts`).
+- For Kanban, fetch all rows — but only fields needed for cards (project_name, stage, total_contract_value, lead_owner, expected_closing_date, priority) instead of `select('*')`.
+- Wrap the deals query in React Query so view switches don't refetch.
+
+### 10. Trim console noise
+Remove the verbose `console.log` blocks in `useYearlyRevenueData`, `useUserDisplayNames`, and `useAuth`. They run on every render in dev preview and on production when devtools are open.
+
+### Files to change
+- `src/App.tsx` — QueryClient defaults
+- `src/hooks/useYearlyRevenueData.tsx` — narrow selects, server-side year filter, staleTime, drop logs
+- `src/hooks/useUserDisplayNames.tsx` — useQuery + shared cache
+- `src/hooks/useColumnPreferences.tsx` — useQuery cache
+- `src/hooks/useDealsColumnPreferences.tsx` — useQuery cache
+- `src/hooks/useCampaigns.tsx` — narrow selects, staleTime
+- `src/hooks/useActionItems.tsx` — limit, stable key
+- `src/components/dashboard/CampaignDashboardWidget.tsx` — narrow selects
+- `src/components/AccountTable.tsx` — switch contact-count to a cached query keyed on visible names
+- `src/pages/Dashboard.tsx` — lazy import widgets
+- `src/pages/DealsPage.tsx` — narrow `select`, wrap in React Query
+
+### Expected result
+- First Dashboard paint goes from ~3–5s to ~600ms (no full-table deal scans, no campaign_mart over-fetch).
+- Page-to-page navigation feels instant: cached data is reused for 5 minutes; only changed data refetches.
+- Network requests on a typical session drop from ~30+ to ~8–10.
+- No code-splitting regression — all pages still lazy-loaded.
 

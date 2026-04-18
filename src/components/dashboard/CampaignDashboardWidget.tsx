@@ -3,7 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Megaphone, Target, TrendingUp } from "lucide-react";
+import { Megaphone, TrendingUp } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function CampaignDashboardWidget() {
@@ -11,6 +11,7 @@ export function CampaignDashboardWidget() {
 
   const { data, isLoading } = useQuery({
     queryKey: ["campaign-dashboard-widget"],
+    staleTime: 2 * 60 * 1000,
     queryFn: async () => {
       // Fetch active campaigns
       const { data: campaigns } = await supabase
@@ -21,25 +22,27 @@ export function CampaignDashboardWidget() {
       const activeCampaigns = campaigns?.filter((c) => c.status === "Active") || [];
       const allCampaigns = campaigns || [];
 
-      // Fetch MART data
-      const { data: martData } = await supabase.from("campaign_mart").select("*");
+      // Fetch Strategy progress data (only fields used)
+      const { data: strategyData } = await supabase
+        .from("campaign_mart")
+        .select("campaign_id,message_done,audience_done,region_done,timing_done");
 
-      // Compute avg MART completion
+      // Compute avg Strategy completion
       let totalFlags = 0;
       let doneFlags = 0;
       const campaignIds = allCampaigns.map((c) => c.id);
-      martData?.forEach((m) => {
+      strategyData?.forEach((m) => {
         if (campaignIds.includes(m.campaign_id)) {
           totalFlags += 4;
           doneFlags += [m.message_done, m.audience_done, m.region_done, m.timing_done].filter(Boolean).length;
         }
       });
-      const avgMart = totalFlags > 0 ? Math.round((doneFlags / totalFlags) * 100) : 0;
+      const avgStrategy = totalFlags > 0 ? Math.round((doneFlags / totalFlags) * 100) : 0;
 
-      // Fetch contacts for response rate
+      // Fetch contacts for response rate (only fields used)
       const { data: contacts } = await supabase
         .from("campaign_contacts")
-        .select("campaign_id, stage");
+        .select("campaign_id,stage");
 
       const campaignResponseRates: { id: string; name: string; rate: number }[] = [];
       allCampaigns.forEach((c) => {
@@ -60,7 +63,7 @@ export function CampaignDashboardWidget() {
       return {
         activeCount: activeCampaigns.length,
         totalCount: allCampaigns.length,
-        avgMart,
+        avgStrategy,
         topCampaigns: campaignResponseRates.slice(0, 3),
       };
     },
@@ -98,8 +101,8 @@ export function CampaignDashboardWidget() {
             <div className="text-xs text-muted-foreground">Active Campaigns</div>
           </div>
           <div className="text-center p-3 rounded-lg bg-primary/5">
-            <div className="text-2xl font-bold text-primary">{data.avgMart}%</div>
-            <div className="text-xs text-muted-foreground">Avg MART Done</div>
+            <div className="text-2xl font-bold text-primary">{data.avgStrategy}%</div>
+            <div className="text-xs text-muted-foreground">Avg Strategy Done</div>
           </div>
           <div className="text-center p-3 rounded-lg bg-primary/5">
             <div className="text-2xl font-bold text-primary">{data.totalCount}</div>
