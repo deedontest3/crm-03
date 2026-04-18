@@ -94,47 +94,75 @@ export function AddContactsModal({ open, onOpenChange, campaignId, forAccount, e
 
   return (
     <Dialog open={open} onOpenChange={(o) => { onOpenChange(o); if (!o) reset(); }}>
-      <DialogContent className="sm:max-w-[600px] max-h-[80vh] flex flex-col overflow-hidden">
-        <DialogHeader>
-          <DialogTitle>{forAccount ? `Add Contacts from ${forAccount.name}` : "Add Contacts to Campaign"}</DialogTitle>
+      <DialogContent className="sm:max-w-[720px] max-h-[80vh] flex flex-col overflow-hidden p-4 gap-3">
+        <DialogHeader className="space-y-0.5">
+          <DialogTitle className="text-base">{forAccount ? `Add Contacts from ${forAccount.name}` : "Add Contacts to Campaign"}</DialogTitle>
           {!forAccount && campaignAccountNames.length > 0 && (
-            <p className="text-xs text-muted-foreground mt-1">Showing contacts from campaign accounts</p>
+            <p className="text-xs text-muted-foreground">Showing contacts from campaign accounts</p>
           )}
         </DialogHeader>
-        <div className="relative mb-4 flex-shrink-0">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input placeholder="Search contacts..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-9" />
-        </div>
-        {availableContacts.length > 0 && (
-          <div className="flex items-center gap-3 p-2 border-b border-border mb-1 cursor-pointer flex-shrink-0" onClick={handleSelectAll}>
-            <Checkbox checked={selectedIds.length === availableContacts.length && availableContacts.length > 0} />
-            <span className="text-sm font-medium">Select All ({availableContacts.length})</span>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="relative w-64">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              placeholder="Search contacts..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-8 h-8 text-sm"
+            />
           </div>
-        )}
-        <div className="flex-1 overflow-y-auto space-y-1 min-h-0">
+          {availableContacts.length > 0 && (
+            <div
+              className="flex items-center gap-2 px-2 py-1 rounded cursor-pointer hover:bg-muted/50"
+              onClick={handleSelectAll}
+            >
+              <Checkbox checked={selectedIds.length === availableContacts.length && availableContacts.length > 0} />
+              <span className="text-xs font-medium whitespace-nowrap">Select All ({availableContacts.length})</span>
+            </div>
+          )}
+          {selectedIds.length > 0 && (
+            <span className="text-xs text-muted-foreground ml-auto">{selectedIds.length} selected</span>
+          )}
+        </div>
+        <div className="flex-1 overflow-y-auto min-h-0 border rounded-md divide-y divide-border">
           {availableContacts.map((contact) => (
-            <div key={contact.id} className="flex items-center gap-3 p-2 rounded hover:bg-muted/50 cursor-pointer" onClick={() => toggleSelect(contact.id)}>
+            <div
+              key={contact.id}
+              className="flex items-center gap-2 px-2.5 py-1.5 hover:bg-muted/50 cursor-pointer"
+              onClick={() => toggleSelect(contact.id)}
+            >
               <Checkbox checked={selectedIds.includes(contact.id)} />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium">{contact.contact_name}</p>
-                <p className="text-xs text-muted-foreground">{[contact.position, contact.company_name].filter(Boolean).join(" at ")}</p>
-                <div className="flex gap-3 mt-0.5">
-                  {contact.email && <span className="text-xs text-muted-foreground truncate">📧 {contact.email}</span>}
-                  {contact.phone_no && <span className="text-xs text-muted-foreground">📞 {contact.phone_no}</span>}
-                  {contact.linkedin && <span className="text-xs text-primary">🔗 LinkedIn</span>}
-                </div>
+              <div className="flex-1 min-w-0 flex items-center gap-2 text-sm">
+                <span className="font-medium truncate">{contact.contact_name}</span>
+                {contact.company_name && (
+                  <>
+                    <span className="text-muted-foreground/50">·</span>
+                    <span className="text-xs text-muted-foreground truncate">{contact.company_name}</span>
+                  </>
+                )}
+                {contact.email && (
+                  <>
+                    <span className="text-muted-foreground/50">·</span>
+                    <span className="text-xs text-muted-foreground truncate">{contact.email}</span>
+                  </>
+                )}
               </div>
+              {contact.linkedin && (
+                <span className="text-[10px] text-primary uppercase tracking-wide flex-shrink-0">in</span>
+              )}
             </div>
           ))}
           {availableContacts.length === 0 && (
-            <p className="text-sm text-muted-foreground text-center py-4">
+            <p className="text-sm text-muted-foreground text-center py-6">
               {forAccount ? `No contacts found for ${forAccount.name}` : campaignAccountNames.length === 0 ? "Add accounts first." : "No matching contacts found."}
             </p>
           )}
         </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={handleAdd} disabled={selectedIds.length === 0}>Add {selectedIds.length} Contact(s)</Button>
+        <DialogFooter className="gap-2 sm:gap-2">
+          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button size="sm" onClick={handleAdd} disabled={selectedIds.length === 0}>
+            Add {selectedIds.length > 0 ? selectedIds.length : ""} Contact{selectedIds.length === 1 ? "" : "s"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
