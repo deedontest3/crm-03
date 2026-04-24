@@ -847,21 +847,28 @@ function BreakdownTable({ rows, primaryLabel, secondaryLabel, emptyHint }: {
     <div className="space-y-2">
       <div className="grid grid-cols-12 gap-2 text-[10px] text-muted-foreground uppercase tracking-wide font-medium px-1">
         <div className="col-span-5">Name</div>
-        <div className="col-span-5">{primaryLabel}</div>
-        <div className="col-span-2 text-right">{secondaryLabel}</div>
+        <div className="col-span-4">{primaryLabel}</div>
+        <div className="col-span-1 text-right">{secondaryLabel}</div>
+        <div className="col-span-2 text-right">Rate</div>
       </div>
-      {rows.map(r => (
-        <div key={r.name} className="grid grid-cols-12 gap-2 items-center text-xs px-1">
-          <div className="col-span-5 truncate font-medium" title={r.name}>{r.name}</div>
-          <div className="col-span-5 flex items-center gap-2">
-            <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
-              <div className="h-full rounded-full" style={{ width: `${pct(r.primary, max)}%`, background: CHART.primary }} />
+      {rows.map(r => {
+        const rate = pct(r.secondary, r.primary);
+        return (
+          <div key={r.name} className="grid grid-cols-12 gap-2 items-center text-xs px-1">
+            <div className="col-span-5 truncate font-medium" title={r.name}>{r.name}</div>
+            <div className="col-span-4 flex items-center gap-2">
+              <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                <div className="h-full rounded-full" style={{ width: `${pct(r.primary, max)}%`, background: CHART.primary }} />
+              </div>
+              <span className="tabular-nums w-8 text-right">{r.primary}</span>
             </div>
-            <span className="tabular-nums w-8 text-right">{r.primary}</span>
+            <div className="col-span-1 text-right tabular-nums text-muted-foreground">{r.secondary}</div>
+            <div className="col-span-2 text-right tabular-nums font-medium" style={{ color: rate >= 20 ? CHART.success : rate >= 10 ? CHART.opened : "hsl(var(--muted-foreground))" }}>
+              {r.primary > 0 ? `${rate}%` : "—"}
+            </div>
           </div>
-          <div className="col-span-2 text-right tabular-nums text-muted-foreground">{r.secondary}</div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
