@@ -220,7 +220,7 @@ Deno.serve(async (req) => {
     });
 
     const pdfBytes = await pdfDoc.save();
-    return new Response(pdfBytes, {
+    return new Response(pdfBytes as BodyInit, {
       status: 200,
       headers: {
         ...corsHeaders,
