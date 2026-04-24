@@ -694,10 +694,10 @@ export function CampaignAnalytics({ campaignId }: Props) {
                 ))}
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 pt-2">
-                <RateRow label="Delivery Rate" num={emailStats.delivered} den={emailStats.sent} color={CHART.success}
-                  hint="Delivered ÷ Sent. Sent excludes inbound replies and manual logs." />
+                <RateRow label="Acceptance Rate" num={emailStats.delivered} den={emailStats.sent} color={CHART.success}
+                  hint="Sent minus bounces ÷ Sent. We don't receive a true delivery receipt from the provider, so this measures emails the provider accepted (no bounce returned)." />
                 <RateRow label="Open Rate" num={emailStats.opened} den={emailStats.delivered} color={CHART.opened}
-                  hint="Unique opens ÷ Delivered, sourced from email_history." />
+                  hint="Unique opens ÷ Accepted, sourced from email_history." />
                 <RateRow label="Reply Rate" num={emailStats.replied} den={emailStats.sent} color={CHART.linkedin}
                   hint="Distinct conversations with at least one inbound message ÷ Sent." />
                 <RateRow label="Bounce Rate" num={emailStats.bounced} den={emailStats.sent} color={CHART.failed}
