@@ -679,7 +679,7 @@ export function CampaignAnalytics({ campaignId }: Props) {
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 {[
                   { label: "Sent",      value: emailStats.sent,      color: CHART.primary, icon: Send },
-                  { label: "Delivered", value: emailStats.delivered, color: CHART.success, icon: Inbox },
+                  { label: "Accepted",  value: emailStats.delivered, color: CHART.success, icon: Inbox },
                   { label: "Opened",    value: emailStats.opened,    color: CHART.opened,  icon: Eye },
                   { label: "Replied",   value: emailStats.replied,   color: CHART.linkedin, icon: Reply },
                   { label: "Bounced",   value: emailStats.bounced,   color: CHART.failed,  icon: AlertTriangle },
@@ -694,10 +694,10 @@ export function CampaignAnalytics({ campaignId }: Props) {
                 ))}
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 pt-2">
-                <RateRow label="Delivery Rate" num={emailStats.delivered} den={emailStats.sent} color={CHART.success}
-                  hint="Delivered ÷ Sent. Sent excludes inbound replies and manual logs." />
+                <RateRow label="Acceptance Rate" num={emailStats.delivered} den={emailStats.sent} color={CHART.success}
+                  hint="Sent minus bounces ÷ Sent. We don't receive a true delivery receipt from the provider, so this measures emails the provider accepted (no bounce returned)." />
                 <RateRow label="Open Rate" num={emailStats.opened} den={emailStats.delivered} color={CHART.opened}
-                  hint="Unique opens ÷ Delivered, sourced from email_history." />
+                  hint="Unique opens ÷ Accepted, sourced from email_history." />
                 <RateRow label="Reply Rate" num={emailStats.replied} den={emailStats.sent} color={CHART.linkedin}
                   hint="Distinct conversations with at least one inbound message ÷ Sent." />
                 <RateRow label="Bounce Rate" num={emailStats.bounced} den={emailStats.sent} color={CHART.failed}
@@ -847,21 +847,28 @@ function BreakdownTable({ rows, primaryLabel, secondaryLabel, emptyHint }: {
     <div className="space-y-2">
       <div className="grid grid-cols-12 gap-2 text-[10px] text-muted-foreground uppercase tracking-wide font-medium px-1">
         <div className="col-span-5">Name</div>
-        <div className="col-span-5">{primaryLabel}</div>
-        <div className="col-span-2 text-right">{secondaryLabel}</div>
+        <div className="col-span-4">{primaryLabel}</div>
+        <div className="col-span-1 text-right">{secondaryLabel}</div>
+        <div className="col-span-2 text-right">Rate</div>
       </div>
-      {rows.map(r => (
-        <div key={r.name} className="grid grid-cols-12 gap-2 items-center text-xs px-1">
-          <div className="col-span-5 truncate font-medium" title={r.name}>{r.name}</div>
-          <div className="col-span-5 flex items-center gap-2">
-            <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
-              <div className="h-full rounded-full" style={{ width: `${pct(r.primary, max)}%`, background: CHART.primary }} />
+      {rows.map(r => {
+        const rate = pct(r.secondary, r.primary);
+        return (
+          <div key={r.name} className="grid grid-cols-12 gap-2 items-center text-xs px-1">
+            <div className="col-span-5 truncate font-medium" title={r.name}>{r.name}</div>
+            <div className="col-span-4 flex items-center gap-2">
+              <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                <div className="h-full rounded-full" style={{ width: `${pct(r.primary, max)}%`, background: CHART.primary }} />
+              </div>
+              <span className="tabular-nums w-8 text-right">{r.primary}</span>
             </div>
-            <span className="tabular-nums w-8 text-right">{r.primary}</span>
+            <div className="col-span-1 text-right tabular-nums text-muted-foreground">{r.secondary}</div>
+            <div className="col-span-2 text-right tabular-nums font-medium" style={{ color: rate >= 20 ? CHART.success : rate >= 10 ? CHART.opened : "hsl(var(--muted-foreground))" }}>
+              {r.primary > 0 ? `${rate}%` : "—"}
+            </div>
           </div>
-          <div className="col-span-2 text-right tabular-nums text-muted-foreground">{r.secondary}</div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

@@ -650,6 +650,47 @@ Deno.serve(async (req) => {
               .eq("campaign_id", originalEmail.campaign_id)
               .eq("account_id", originalEmail.account_id);
           }
+
+          // M3: Auto-create a follow-up action item so the reply doesn't fall through the cracks.
+          // Skip if there's already an open action item for this contact in this campaign in the last 24h.
+          if (originalEmail.contact_id && originalEmail.campaign_id) {
+            try {
+              const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+              const { count: recentOpen } = await supabase
+                .from("action_items")
+                .select("id", { count: "exact", head: true })
+                .eq("module_type", "campaigns")
+                .eq("module_id", originalEmail.campaign_id)
+                .eq("status", "Open")
+                .gte("created_at", yesterday);
+
+              if ((recentOpen ?? 0) === 0) {
+                const { data: contactRow } = await supabase
+                  .from("contacts")
+                  .select("contact_name")
+                  .eq("id", originalEmail.contact_id)
+                  .maybeSingle();
+                const contactLabel = contactRow?.contact_name || fromName || fromEmail;
+                const dueDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+                const assignee = originalEmail.owner || originalEmail.created_by;
+                if (assignee) {
+                  await supabase.from("action_items").insert({
+                    module_type: "campaigns",
+                    module_id: originalEmail.campaign_id,
+                    title: `Reply from ${contactLabel} — respond`,
+                    description: `Auto-generated from inbound email${msg.subject ? `: "${msg.subject}"` : ""}.`,
+                    priority: "High",
+                    due_date: dueDate,
+                    assigned_to: assignee,
+                    created_by: assignee,
+                    status: "Open",
+                  });
+                }
+              }
+            } catch (taskErr) {
+              console.error("Failed to auto-create follow-up action item:", taskErr);
+            }
+          }
         }
 
         processedMailboxes.push(mailbox);
