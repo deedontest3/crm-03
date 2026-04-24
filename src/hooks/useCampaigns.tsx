@@ -22,9 +22,25 @@ export interface CampaignFormData {
   target_audience?: string;
   message_strategy?: string;
   mart_complete?: boolean;
+  priority?: string;
+  primary_channel?: string;
+  tags?: string[];
 }
 
-export function useCampaigns() {
+// Lightweight columns needed for the campaigns list / dashboard.
+// Avoid `select(*)` so we don't pull large text columns (notes, description, message_strategy, region JSON, etc.).
+const LIST_COLUMNS =
+  "id,campaign_name,campaign_type,status,priority,primary_channel,owner,start_date,end_date,tags,mart_complete,archived_at,created_at,region,goal,slug";
+
+export interface UseCampaignsOptions {
+  /** Set to false on detail pages so we don't fetch the full campaigns list as collateral. */
+  enableLists?: boolean;
+  /** Only fetch archived campaigns when the user opens the Archived view. */
+  includeArchived?: boolean;
+}
+
+export function useCampaigns(options: UseCampaignsOptions = {}) {
+  const { enableLists = true, includeArchived = false } = options;
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const { logSecurityEvent } = useSecurityAudit();
@@ -34,13 +50,13 @@ export function useCampaigns() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("campaigns")
-        .select("*")
+        .select(LIST_COLUMNS)
         .is("archived_at", null)
         .order("created_at", { ascending: false });
       if (error) throw error;
       return data as Campaign[];
     },
-    enabled: !!user,
+    enabled: !!user && enableLists,
     staleTime: 2 * 60 * 1000,
   });
 
@@ -54,7 +70,7 @@ export function useCampaigns() {
       if (error) throw error;
       return data;
     },
-    enabled: !!user,
+    enabled: !!user && enableLists,
     staleTime: 2 * 60 * 1000,
   });
 
@@ -78,8 +94,11 @@ export function useCampaigns() {
           country: formData.country || null,
           target_audience: formData.target_audience || null,
           message_strategy: formData.message_strategy || null,
+          priority: formData.priority || "Medium",
+          primary_channel: formData.primary_channel || null,
+          tags: formData.tags && formData.tags.length > 0 ? formData.tags : null,
           created_by: user!.id,
-        });
+        } as any);
       if (error) throw error;
 
       // Auto-create campaign_mart row (Strategy progress tracking)
@@ -123,16 +142,54 @@ export function useCampaigns() {
 
   const deleteCampaign = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from("campaigns").delete().eq("id", id);
+      const { data, error } = await supabase.rpc("delete_campaign_cascade", { _id: id });
       if (error) throw error;
+      if (!data) throw new Error("Campaign was not deleted (not found or no permission).");
+      return data as string;
     },
-    onSuccess: (_: any, id: string) => {
-      logSecurityEvent('DELETE', 'campaigns', id, { operation: 'PERMANENT_DELETE', status: 'Success' });
+    onSuccess: (deletedId: string) => {
+      logSecurityEvent('DELETE', 'campaigns', deletedId, { operation: 'PERMANENT_DELETE', status: 'Success' });
       queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      queryClient.invalidateQueries({ queryKey: ["archived-campaigns"] });
+      queryClient.invalidateQueries({ queryKey: ["campaign-mart-all"] });
+      queryClient.removeQueries({ queryKey: ["campaign", deletedId] });
       toast({ title: "Campaign deleted" });
     },
     onError: (error: Error) => {
       toast({ title: "Error deleting campaign", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deleteCampaignsBulk = useMutation({
+    mutationFn: async (ids: string[]) => {
+      if (ids.length === 0) return [] as string[];
+      const { data, error } = await supabase.rpc("delete_campaigns_cascade", { _ids: ids });
+      if (error) throw error;
+      return (data || []) as string[];
+    },
+    onSuccess: (deletedIds: string[], requestedIds) => {
+      deletedIds.forEach((id) => {
+        logSecurityEvent('DELETE', 'campaigns', id, { operation: 'PERMANENT_DELETE_BULK', status: 'Success' });
+        queryClient.removeQueries({ queryKey: ["campaign", id] });
+      });
+      queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      queryClient.invalidateQueries({ queryKey: ["archived-campaigns"] });
+      queryClient.invalidateQueries({ queryKey: ["campaign-mart-all"] });
+
+      const requested = requestedIds.length;
+      const succeeded = deletedIds.length;
+      if (succeeded === requested) {
+        toast({ title: `Deleted ${succeeded} campaign${succeeded > 1 ? "s" : ""}` });
+      } else {
+        toast({
+          title: `Deleted ${succeeded} of ${requested} campaigns`,
+          description: `${requested - succeeded} could not be deleted (no permission or already removed).`,
+          variant: "destructive",
+        });
+      }
+    },
+    onError: (error: Error) => {
+      toast({ title: "Bulk delete failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -179,13 +236,15 @@ export function useCampaigns() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("campaigns")
-        .select("*")
+        .select(LIST_COLUMNS)
         .not("archived_at", "is", null)
         .order("archived_at", { ascending: false });
       if (error) throw error;
       return data as Campaign[];
     },
-    enabled: !!user,
+    // Only fetch archived list when caller actually opens the archive view.
+    enabled: !!user && enableLists && includeArchived,
+    staleTime: 2 * 60 * 1000,
   });
 
   const cloneCampaign = useMutation({
@@ -218,8 +277,11 @@ export function useCampaigns() {
           target_audience: source.target_audience,
           message_strategy: source.message_strategy,
           mart_complete: false,
+          priority: (source as any).priority || "Medium",
+          primary_channel: (source as any).primary_channel || null,
+          tags: (source as any).tags || null,
           created_by: user!.id,
-        });
+        } as any);
       if (insertErr) throw insertErr;
 
       // 3. Clone Strategy progress (reset all flags)
@@ -318,6 +380,17 @@ export function useCampaigns() {
     return { count, total: 4 };
   };
 
+  // Per-flag detail for tooltips
+  const getStrategyDetail = (campaignId: string) => {
+    const row = strategyQuery.data?.find((m) => m.campaign_id === campaignId);
+    return {
+      message: !!row?.message_done,
+      audience: !!row?.audience_done,
+      region: !!row?.region_done,
+      timing: !!row?.timing_done,
+    };
+  };
+
   return {
     campaigns: campaignsQuery.data || [],
     archivedCampaigns: archivedCampaignsQuery.data || [],
@@ -326,16 +399,44 @@ export function useCampaigns() {
     createCampaign,
     updateCampaign,
     deleteCampaign,
+    deleteCampaignsBulk,
     archiveCampaign,
     restoreCampaign,
     cloneCampaign,
     getStrategyProgress,
+    getStrategyDetail,
   };
 }
 
-export function useCampaignDetail(campaignId: string | undefined) {
+export interface CampaignDetailEnabledTabs {
+  /** Overview tab needs accounts, contacts, communications */
+  overview?: boolean;
+  /** Setup tab needs accounts, contacts, email templates, phone scripts, materials */
+  setup?: boolean;
+  /** Monitoring tab needs communications + accounts/contacts for filters */
+  monitoring?: boolean;
+  /** Action items tab needs nothing extra */
+  actionItems?: boolean;
+}
+
+const DETAIL_STALE_TIME = 60 * 1000;       // 1 min — tab switches don't refetch
+const DETAIL_GC_TIME = 5 * 60 * 1000;      // 5 min — keep data warm in cache
+
+export function useCampaignDetail(
+  campaignId: string | undefined,
+  enabled: CampaignDetailEnabledTabs = { overview: true, setup: true, monitoring: true, actionItems: true }
+) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
+
+  const baseEnabled = !!user && !!campaignId;
+  // Aggregate gates: which datasets need to be loaded based on which tabs are enabled
+  const needAccounts = baseEnabled && (enabled.overview || enabled.setup || enabled.monitoring);
+  const needContacts = baseEnabled && (enabled.overview || enabled.setup || enabled.monitoring);
+  const needCommunications = baseEnabled && (enabled.overview || enabled.monitoring);
+  const needEmailTemplates = baseEnabled && enabled.setup;
+  const needPhoneScripts = baseEnabled && enabled.setup;
+  const needMaterials = baseEnabled && enabled.setup;
 
   const campaignQuery = useQuery({
     queryKey: ["campaign", campaignId],
@@ -348,7 +449,9 @@ export function useCampaignDetail(campaignId: string | undefined) {
       if (error) throw error;
       return data as Campaign;
     },
-    enabled: !!user && !!campaignId,
+    enabled: baseEnabled,
+    staleTime: DETAIL_STALE_TIME,
+    gcTime: DETAIL_GC_TIME,
   });
 
   // Strategy state from explicit table
@@ -363,11 +466,13 @@ export function useCampaignDetail(campaignId: string | undefined) {
       if (error) throw error;
       return data;
     },
-    enabled: !!user && !!campaignId,
+    enabled: baseEnabled,
+    staleTime: DETAIL_STALE_TIME,
+    gcTime: DETAIL_GC_TIME,
   });
 
   const accountsQuery = useQuery({
-    queryKey: ["campaign-accounts", campaignId],
+    queryKey: ["campaign-accounts", campaignId, "detail"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("campaign_accounts")
@@ -376,24 +481,28 @@ export function useCampaignDetail(campaignId: string | undefined) {
       if (error) throw error;
       return data;
     },
-    enabled: !!user && !!campaignId,
+    enabled: needAccounts,
+    staleTime: DETAIL_STALE_TIME,
+    gcTime: DETAIL_GC_TIME,
   });
 
   const contactsQuery = useQuery({
-    queryKey: ["campaign-contacts", campaignId],
+    queryKey: ["campaign-contacts", campaignId, "detail"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("campaign_contacts")
-        .select("*, contacts(contact_name, email, position, company_name)")
+        .select("*, contacts(contact_name, email, position, company_name, region)")
         .eq("campaign_id", campaignId!);
       if (error) throw error;
       return data;
     },
-    enabled: !!user && !!campaignId,
+    enabled: needContacts,
+    staleTime: DETAIL_STALE_TIME,
+    gcTime: DETAIL_GC_TIME,
   });
 
   const communicationsQuery = useQuery({
-    queryKey: ["campaign-communications", campaignId],
+    queryKey: ["campaign-communications", campaignId, "detail"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("campaign_communications")
@@ -403,7 +512,9 @@ export function useCampaignDetail(campaignId: string | undefined) {
       if (error) throw error;
       return data;
     },
-    enabled: !!user && !!campaignId,
+    enabled: needCommunications,
+    staleTime: DETAIL_STALE_TIME,
+    gcTime: DETAIL_GC_TIME,
   });
 
   const emailTemplatesQuery = useQuery({
@@ -416,7 +527,9 @@ export function useCampaignDetail(campaignId: string | undefined) {
       if (error) throw error;
       return data;
     },
-    enabled: !!user && !!campaignId,
+    enabled: needEmailTemplates,
+    staleTime: DETAIL_STALE_TIME,
+    gcTime: DETAIL_GC_TIME,
   });
 
   const phoneScriptsQuery = useQuery({
@@ -429,7 +542,9 @@ export function useCampaignDetail(campaignId: string | undefined) {
       if (error) throw error;
       return data;
     },
-    enabled: !!user && !!campaignId,
+    enabled: needPhoneScripts,
+    staleTime: DETAIL_STALE_TIME,
+    gcTime: DETAIL_GC_TIME,
   });
 
   const materialsQuery = useQuery({
@@ -442,7 +557,9 @@ export function useCampaignDetail(campaignId: string | undefined) {
       if (error) throw error;
       return data;
     },
-    enabled: !!user && !!campaignId,
+    enabled: needMaterials,
+    staleTime: DETAIL_STALE_TIME,
+    gcTime: DETAIL_GC_TIME,
   });
 
   // Strategy completion from explicit flags
@@ -517,5 +634,50 @@ export function useCampaignDetail(campaignId: string | undefined) {
     isCampaignEnded,
     daysRemaining,
     updateStrategyFlag,
+  };
+}
+
+/**
+ * Resolve a slug-or-UUID URL parameter to a campaign UUID with a single
+ * lightweight query — avoids loading the full campaigns list on detail pages.
+ */
+export function useCampaignIdFromSlug(rawId: string | undefined) {
+  const { user } = useAuth();
+  const isUUID = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+  const extractedId = rawId?.includes("--") ? rawId.split("--").pop() : rawId;
+  const isDirectUUID = extractedId ? isUUID(extractedId) : false;
+
+  const slugQuery = useQuery({
+    queryKey: ["campaign-id-by-slug", rawId],
+    queryFn: async () => {
+      if (!rawId) return null;
+      // O(1) lookup via the indexed `slug` column maintained by a DB trigger.
+      const { data: bySlug } = await (supabase
+        .from("campaigns")
+        .select("id") as any)
+        .eq("slug", rawId)
+        .maybeSingle();
+      if (bySlug?.id) return bySlug.id as string;
+
+      // Legacy fallback: older URLs may use the plain slugified name.
+      const { data, error } = await supabase
+        .from("campaigns")
+        .select("id,campaign_name")
+        .is("archived_at", null);
+      if (error) throw error;
+      const match = (data || []).find((c) => {
+        const slug = c.campaign_name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+        return slug === rawId;
+      });
+      return match?.id || null;
+    },
+    enabled: !!user && !!rawId && !isDirectUUID,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+  });
+
+  return {
+    id: isDirectUUID ? extractedId : slugQuery.data || undefined,
+    isResolving: !isDirectUUID && slugQuery.isLoading,
   };
 }

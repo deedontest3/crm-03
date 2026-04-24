@@ -60,6 +60,10 @@ interface ContactTableProps {
   refreshTrigger?: number;
   searchTerm?: string;
   setSearchTerm?: (term: string) => void;
+  /** Deep-link: id of contact to auto-open in edit modal once data loads. */
+  initialEditContactId?: string | null;
+  /** Notify parent that the deep-link has been consumed so it won't re-fire. */
+  onInitialEditConsumed?: () => void;
 }
 
 export const ContactTable = ({ 
@@ -71,7 +75,9 @@ export const ContactTable = ({
   setSelectedContacts,
   refreshTrigger,
   searchTerm = "",
-  setSearchTerm
+  setSearchTerm,
+  initialEditContactId,
+  onInitialEditConsumed,
 }: ContactTableProps) => {
   const { toast } = useToast();
   const { logDelete, logCreate } = useCRUDAudit();
@@ -136,6 +142,34 @@ export const ContactTable = ({
     }
   }, [refreshTrigger, fetchContacts]);
 
+  // Deep-link auto-open: when parent passes initialEditContactId, find it in
+  // the loaded page (or fetch it directly) and open the edit modal.
+  useEffect(() => {
+    if (!initialEditContactId) return;
+    const inPage = pageContacts.find(c => c.id === initialEditContactId);
+    if (inPage) {
+      setEditingContact(inPage);
+      setShowModal(true);
+      onInitialEditConsumed?.();
+      return;
+    }
+    // Not in current page — fetch the contact directly so deep-link works
+    // even when the row is on another page.
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from("contacts")
+        .select("*")
+        .eq("id", initialEditContactId)
+        .maybeSingle();
+      if (cancelled || !data) return;
+      setEditingContact(data as Contact);
+      setShowModal(true);
+      onInitialEditConsumed?.();
+    })();
+    return () => { cancelled = true; };
+  }, [initialEditContactId, pageContacts, setShowModal, onInitialEditConsumed]);
+
   const handleSort = (field: string) => {
     if (sortField === field) {
       setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
@@ -182,16 +216,7 @@ export const ContactTable = ({
   const visibleColumns = columns.filter(col => col.visible);
   const totalPages = Math.ceil(totalCount / itemsPerPage);
 
-  if (loading && pageContacts.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
-          <p className="text-muted-foreground">Loading contacts...</p>
-        </div>
-      </div>
-    );
-  }
+  // Render table chrome immediately; the body component shows skeleton rows while loading.
 
 
   const handleAddActionItem = (contact: Contact) => {

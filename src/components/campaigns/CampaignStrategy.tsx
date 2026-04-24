@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 // Card imports removed — using divide-y container instead
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -10,6 +10,7 @@ import { CampaignMessage } from "./CampaignMessage";
 import { CampaignAudience } from "./CampaignAudience";
 import { CampaignRegion } from "./CampaignRegion";
 import { CampaignTiming } from "./CampaignTiming";
+import { FollowUpRulesPanel } from "./FollowUpRulesPanel";
 import type { Campaign } from "@/hooks/useCampaigns";
 
 interface Props {
@@ -23,6 +24,8 @@ interface Props {
   campaignName?: string;
   campaignOwner?: string | null;
   endDate?: string | null;
+  initialOpenSection?: "region" | "audience" | "message" | "timing";
+  audienceView?: "accounts" | "contacts";
   contentCounts?: {
     emailTemplateCount: number;
     phoneScriptCount: number;
@@ -45,11 +48,21 @@ export function parseSelectedRegions(raw: string | null): string[] {
   return raw && !raw.startsWith("[") ? [raw] : [];
 }
 
-export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, updateStrategyFlag, isCampaignEnded, daysRemaining, timingNotes, campaignName, campaignOwner, endDate, contentCounts }: Props) {
+export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, updateStrategyFlag, isCampaignEnded, daysRemaining, timingNotes, campaignName, campaignOwner, endDate, initialOpenSection, audienceView, contentCounts }: Props) {
   const queryClient = useQueryClient();
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     region: true, audience: false, message: false, timing: false,
   });
+
+  useEffect(() => {
+    if (!initialOpenSection) return;
+    setOpenSections({
+      region: initialOpenSection === "region",
+      audience: initialOpenSection === "audience",
+      message: initialOpenSection === "message",
+      timing: initialOpenSection === "timing",
+    });
+  }, [initialOpenSection, audienceView]);
 
   const selectedRegions = useMemo(() => parseSelectedRegions(campaign.region), [campaign.region]);
 
@@ -139,10 +152,19 @@ export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, upd
   };
 
   const sectionIcons: Record<string, React.ReactNode> = {
-    region: <Globe className="h-4 w-4" />,
-    audience: <Users className="h-4 w-4" />,
-    message: <Mail className="h-4 w-4" />,
-    timing: <Clock className="h-4 w-4" />,
+    region: <Globe className="h-[18px] w-[18px]" />,
+    audience: <Users className="h-[18px] w-[18px]" />,
+    message: <Mail className="h-[18px] w-[18px]" />,
+    timing: <Clock className="h-[18px] w-[18px]" />,
+  };
+
+  // Unified header styling — all sections use the Region (blue) theme
+  const unifiedStyle = { header: "bg-blue-500/10 hover:bg-blue-500/15", icon: "text-blue-600 dark:text-blue-400", border: "border-l-4 border-l-blue-500" };
+  const sectionStyles: Record<string, { header: string; icon: string; border: string }> = {
+    region:   unifiedStyle,
+    audience: unifiedStyle,
+    message:  unifiedStyle,
+    timing:   unifiedStyle,
   };
 
   // Order: Region → Audience → Message → Timing
@@ -170,28 +192,39 @@ export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, upd
           return (
             <Collapsible key={section.key} open={isOpen} onOpenChange={() => toggleSection(section.key)}>
               <CollapsibleTrigger asChild>
-                <div className="py-2 px-3 cursor-pointer hover:bg-muted/30 transition-colors">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      {section.done
-                        ? <CheckCircle2 className="h-4 w-4 text-primary shrink-0" />
-                        : <Circle className="h-4 w-4 text-muted-foreground shrink-0" />}
-                      {sectionIcons[section.key]}
-                      <span className="text-sm font-medium">{section.label}</span>
+                <div className={`py-3 px-4 cursor-pointer transition-colors ${sectionStyles[section.key].header} ${sectionStyles[section.key].border} ${section.done ? "opacity-60" : ""}`}>
+                  <div className="grid grid-cols-3 items-center gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (section.done) {
+                            handleUnmark(section.flag, section.label);
+                          } else {
+                            handleMarkDone(section.flag, section.label, section.key);
+                          }
+                        }}
+                        title={section.done ? `Unmark ${section.label}` : `Mark ${section.label} as done`}
+                        className="shrink-0 rounded-full hover:scale-110 transition-transform focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        {section.done
+                          ? <CheckCircle2 className="h-6 w-6 text-primary fill-primary/20" />
+                          : <Circle className="h-6 w-6 text-muted-foreground hover:text-primary" />}
+                      </button>
+                      <span className={sectionStyles[section.key].icon}>{sectionIcons[section.key]}</span>
+                      <span className={`text-[15px] font-semibold ${section.done ? "text-muted-foreground" : ""}`}>{section.label}</span>
+                    </div>
+                    <div className="flex justify-center min-w-0">
                       {!isOpen && (() => {
                         const summary = getContentSummary(section.key);
                         return summary ? (
-                          <span className="text-xs text-muted-foreground ml-1 truncate">· {summary}</span>
+                          <span className="text-[13px] text-muted-foreground truncate">{summary}</span>
                         ) : null;
                       })()}
                     </div>
-                    <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-                      {section.done ? (
-                        <Button variant="ghost" size="sm" className="text-[11px] h-6 px-2" onClick={() => handleUnmark(section.flag, section.label)}>Unmark</Button>
-                      ) : (
-                        <Button size="sm" className="text-[11px] h-6 px-2" onClick={() => handleMarkDone(section.flag, section.label, section.key)}>Mark Done</Button>
-                      )}
-                      <ChevronDown className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${isOpen ? "rotate-180" : ""}`} />
+                    <div className="flex items-center justify-end gap-1 shrink-0">
+                      <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${isOpen ? "rotate-180" : ""}`} />
                     </div>
                   </div>
                 </div>
@@ -207,6 +240,7 @@ export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, upd
                       campaignOwner={campaignOwner}
                       endDate={endDate}
                       isCampaignEnded={isCampaignEnded}
+                      focusMode={audienceView}
                     />
                   )}
                   {section.key === "message" && (
@@ -232,6 +266,8 @@ export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, upd
           );
         })}
       </div>
+
+      <FollowUpRulesPanel campaignId={campaignId} />
     </div>
   );
 }

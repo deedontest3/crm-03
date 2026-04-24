@@ -1,9 +1,10 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Search } from "lucide-react";
+import { Search, Mail, Linkedin, Phone } from "lucide-react";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -16,17 +17,23 @@ interface Props {
   forAccount: { id: string; name: string } | null;
   existingContactIds: string[];
   campaignAccounts: any[];
+  selectedCountries?: string[];
+  /** Active channel filter on the parent Audience view — surfaced as a banner. */
+  audienceChannelFilter?: "all" | "Email" | "LinkedIn" | "Phone";
 }
 
-async function fetchAllContacts() {
+async function fetchAllContacts(filterCompanyNames: string[] | null) {
   const batchSize = 1000;
   let allData: any[] = [];
   let from = 0;
   while (true) {
-    const { data, error } = await supabase
+    let q = supabase
       .from("contacts")
-      .select("id, contact_name, email, position, company_name, phone_no, linkedin")
-      .range(from, from + batchSize - 1);
+      .select("id, contact_name, email, position, company_name, phone_no, linkedin");
+    if (filterCompanyNames && filterCompanyNames.length > 0) {
+      q = q.in("company_name", filterCompanyNames);
+    }
+    const { data, error } = await q.range(from, from + batchSize - 1);
     if (error) throw error;
     allData.push(...(data || []));
     if (!data || data.length < batchSize) break;
@@ -35,17 +42,28 @@ async function fetchAllContacts() {
   return allData;
 }
 
-export function AddContactsModal({ open, onOpenChange, campaignId, forAccount, existingContactIds, campaignAccounts }: Props) {
+export function AddContactsModal({ open, onOpenChange, campaignId, forAccount, existingContactIds, campaignAccounts, selectedCountries = [], audienceChannelFilter = "all" }: Props) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [channelFilter, setChannelFilter] = useState<"all" | "Email" | "LinkedIn" | "Phone">(audienceChannelFilter);
+  // B12: keep chip in sync if Audience filter changes between opens.
+  useEffect(() => { if (open) setChannelFilter(audienceChannelFilter); }, [open, audienceChannelFilter]);
 
   const campaignAccountNames = campaignAccounts.map((ca: any) => ca.accounts?.account_name).filter(Boolean);
 
+  // Limit contacts to companies that are part of the campaign (the only sensible scope).
+  // selectedCountries already filtered campaign accounts upstream, so this transitively respects countries.
+  const filterCompanyNames = useMemo(() => {
+    if (forAccount) return [forAccount.name];
+    if (campaignAccountNames.length > 0) return campaignAccountNames;
+    return null;
+  }, [forAccount, campaignAccountNames.join("|")]);
+
   const { data: allContacts = [] } = useQuery({
-    queryKey: ["all-contacts-paginated"],
-    queryFn: fetchAllContacts,
+    queryKey: ["campaign-eligible-contacts", filterCompanyNames?.join("|") || "all", selectedCountries.join(",")],
+    queryFn: () => fetchAllContacts(filterCompanyNames),
     enabled: open,
   });
 
@@ -53,6 +71,9 @@ export function AddContactsModal({ open, onOpenChange, campaignId, forAccount, e
     return allContacts.filter((c) => {
       if (existingContactIds.includes(c.id)) return false;
       if (!c.contact_name.toLowerCase().includes(searchTerm.toLowerCase())) return false;
+      if (channelFilter === "Email" && !c.email?.trim()) return false;
+      if (channelFilter === "LinkedIn" && !c.linkedin?.trim()) return false;
+      if (channelFilter === "Phone" && !c.phone_no?.trim()) return false;
       if (forAccount) {
         return c.company_name && c.company_name.toLowerCase() === forAccount.name.toLowerCase();
       }
@@ -61,7 +82,7 @@ export function AddContactsModal({ open, onOpenChange, campaignId, forAccount, e
       }
       return true;
     });
-  }, [allContacts, existingContactIds, searchTerm, forAccount, campaignAccountNames]);
+  }, [allContacts, existingContactIds, searchTerm, forAccount, campaignAccountNames, channelFilter]);
 
   const toggleSelect = (id: string) =>
     setSelectedIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
@@ -71,7 +92,7 @@ export function AddContactsModal({ open, onOpenChange, campaignId, forAccount, e
     else setSelectedIds(availableContacts.map((c) => c.id));
   };
 
-  const reset = () => { setSearchTerm(""); setSelectedIds([]); };
+  const reset = () => { setSearchTerm(""); setSelectedIds([]); setChannelFilter("all"); };
 
   const handleAdd = async () => {
     if (selectedIds.length === 0) return;
@@ -101,6 +122,11 @@ export function AddContactsModal({ open, onOpenChange, campaignId, forAccount, e
             <p className="text-xs text-muted-foreground">Showing contacts from campaign accounts</p>
           )}
         </DialogHeader>
+        {audienceChannelFilter !== "all" && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-400">
+            Audience is filtered to <span className="font-medium">{audienceChannelFilter}</span>-reachable contacts. The list below shows all contacts — use the channel toggle to narrow it.
+          </div>
+        )}
         <div className="flex items-center gap-2 flex-shrink-0">
           <div className="relative w-64">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
@@ -111,6 +137,24 @@ export function AddContactsModal({ open, onOpenChange, campaignId, forAccount, e
               className="pl-8 h-8 text-sm"
             />
           </div>
+          <ToggleGroup
+            type="single"
+            value={channelFilter}
+            onValueChange={(v) => setChannelFilter((v as any) || "all")}
+            size="sm"
+            className="h-8"
+          >
+            <ToggleGroupItem value="all" className="h-7 px-2 text-[11px]">All</ToggleGroupItem>
+            <ToggleGroupItem value="Email" className="h-7 px-2 text-[11px] gap-1" aria-label="Reachable via email">
+              <Mail className="h-3 w-3" />
+            </ToggleGroupItem>
+            <ToggleGroupItem value="LinkedIn" className="h-7 px-2 text-[11px] gap-1" aria-label="Reachable on LinkedIn">
+              <Linkedin className="h-3 w-3" />
+            </ToggleGroupItem>
+            <ToggleGroupItem value="Phone" className="h-7 px-2 text-[11px] gap-1" aria-label="Reachable via phone">
+              <Phone className="h-3 w-3" />
+            </ToggleGroupItem>
+          </ToggleGroup>
           {availableContacts.length > 0 && (
             <div
               className="flex items-center gap-2 px-2 py-1 rounded cursor-pointer hover:bg-muted/50"
@@ -137,9 +181,11 @@ export function AddContactsModal({ open, onOpenChange, campaignId, forAccount, e
                 <span className="text-xs text-muted-foreground truncate">{contact.company_name || "—"}</span>
                 <span className="text-xs text-muted-foreground truncate">{contact.email || "—"}</span>
               </div>
-              {contact.linkedin && (
-                <span className="text-[10px] text-primary uppercase tracking-wide flex-shrink-0">in</span>
-              )}
+              <span className="inline-flex items-center gap-1 flex-shrink-0">
+                <Mail className={`h-3 w-3 ${contact.email ? "text-primary" : "text-muted-foreground/40"}`} />
+                <Linkedin className={`h-3 w-3 ${contact.linkedin ? "text-primary" : "text-muted-foreground/40"}`} />
+                <Phone className={`h-3 w-3 ${contact.phone_no ? "text-primary" : "text-muted-foreground/40"}`} />
+              </span>
             </div>
           ))}
           {availableContacts.length === 0 && (

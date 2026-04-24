@@ -3,8 +3,8 @@ import { DragDropContext, Droppable, Draggable, DropResult } from "@hello-pangea
 import { Deal, DealStage, DEAL_STAGES, STAGE_COLORS } from "@/types/deal";
 import { DealCard } from "./DealCard";
 import { InlineDetailsPanel } from "./kanban/InlineDetailsPanel";
-import { ActionItemModal } from "./ActionItemModal";
-import { useActionItems, ActionItem, CreateActionItemInput } from "@/hooks/useActionItems";
+import { KanbanActionItemModal } from "./kanban/KanbanActionItemModal";
+import type { ActionItem } from "@/hooks/useActionItems";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -66,11 +66,10 @@ export const KanbanBoard = ({
   const savedScrollPosition = useRef<{ top: number; left: number }>({ top: 0, left: 0 });
   const TRANSITION_MS = 300;
    
-   // Action item modal state
+   // Action item modal state — useActionItems() is lazy-mounted inside KanbanActionItemModal
    const [actionModalOpen, setActionModalOpen] = useState(false);
    const [editingActionItem, setEditingActionItem] = useState<ActionItem | null>(null);
    const [actionModalDealId, setActionModalDealId] = useState<string | null>(null);
-   const { createActionItem, updateActionItem } = useActionItems();
    
    // Add Detail modal state (triggered from AnimatedStageHeaders "Add" button)
    const [addDetailOpen, setAddDetailOpen] = useState(false);
@@ -463,33 +462,7 @@ export const KanbanBoard = ({
      setActionModalOpen(true);
    };
  
-   // Handle saving action item
-   const handleSaveActionItem = async (data: CreateActionItemInput) => {
-     try {
-       if (editingActionItem) {
-         await updateActionItem({ id: editingActionItem.id, ...data });
-         toast({
-           title: "Action item updated",
-           description: "The action item has been updated successfully.",
-         });
-       } else {
-         await createActionItem(data);
-         toast({
-           title: "Action item created",
-           description: "The action item has been created successfully.",
-         });
-       }
-       setActionModalOpen(false);
-       setEditingActionItem(null);
-     } catch (error) {
-       console.error('Error saving action item:', error);
-       toast({
-         title: "Error",
-         description: "Failed to save action item.",
-         variant: "destructive",
-       });
-     }
-   };
+   // Save handler now lives inside KanbanActionItemModal (lazy-mounted)
  
   // Get grid columns - insert expanded panel column when needed
   const getGridColumns = () => {
@@ -784,21 +757,26 @@ export const KanbanBoard = ({
         />
       </div>
        
-      {/* Action Item Modal */}
-      <ActionItemModal
-        open={actionModalOpen}
-        onOpenChange={(open) => {
-          setActionModalOpen(open);
-          if (!open) {
+      {/* Action Item Modal — lazy-mounted: useActionItems hook only fires when open */}
+      {actionModalOpen && (
+        <KanbanActionItemModal
+          open={actionModalOpen}
+          onOpenChange={(open) => {
+            setActionModalOpen(open);
+            if (!open) {
+              setEditingActionItem(null);
+              setActionModalDealId(null);
+            }
+          }}
+          actionItem={editingActionItem}
+          defaultModuleId={actionModalDealId || expandedDealId || undefined}
+          onSaved={() => {
+            setActionModalOpen(false);
             setEditingActionItem(null);
             setActionModalDealId(null);
-          }
-        }}
-        actionItem={editingActionItem}
-        onSave={handleSaveActionItem}
-        defaultModuleType="deals"
-        defaultModuleId={actionModalDealId || expandedDealId || undefined}
-      />
+          }}
+        />
+      )}
     </div>
   );
 };

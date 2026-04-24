@@ -9,8 +9,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useCampaigns, type CampaignFormData, type Campaign } from "@/hooks/useCampaigns";
 import { supabase } from "@/integrations/supabase/client";
 import { useAllUsers } from "@/hooks/useUserDisplayNames";
-
-const CAMPAIGN_TYPES = ["Outreach", "Nurture", "Event"];
+import { CAMPAIGN_TYPE_OPTIONS, PRIORITY_OPTIONS, CHANNEL_OPTIONS, campaignTypeLabel } from "@/utils/campaignTypeLabel";
 
 interface CampaignModalProps {
   open: boolean;
@@ -20,15 +19,15 @@ interface CampaignModalProps {
   onCreated?: (id: string) => void;
 }
 
-export function CampaignModal({ open, onClose, campaign, isStrategyComplete = false, onCreated }: CampaignModalProps) {
+export function CampaignModal({ open, onClose, campaign, onCreated }: CampaignModalProps) {
   const { user } = useAuth();
   const { createCampaign, updateCampaign } = useCampaigns();
   const { users: allUsers } = useAllUsers();
   const isEditing = !!campaign;
 
-  const [formData, setFormData] = useState<CampaignFormData>({
+  const emptyForm: CampaignFormData = {
     campaign_name: "",
-    campaign_type: "Outreach",
+    campaign_type: "New Outreach",
     goal: "",
     owner: user?.id || "",
     start_date: "",
@@ -36,15 +35,25 @@ export function CampaignModal({ open, onClose, campaign, isStrategyComplete = fa
     status: "Draft",
     notes: "",
     description: "",
-  });
+    priority: "Medium",
+    primary_channel: "",
+    tags: [],
+  };
 
+  const [formData, setFormData] = useState<CampaignFormData>(emptyForm);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (campaign) {
+      const c = campaign as any;
+      const rawType = campaign.campaign_type || "New Outreach";
+      const normalizedType = CAMPAIGN_TYPE_OPTIONS.find((o) => o.value === rawType)
+        ? rawType
+        : campaignTypeLabel(rawType);
       setFormData({
         campaign_name: campaign.campaign_name,
-        campaign_type: campaign.campaign_type || "Outreach",
+        campaign_type: normalizedType,
         goal: campaign.goal || "",
         owner: campaign.owner || user?.id || "",
         start_date: campaign.start_date || "",
@@ -52,78 +61,59 @@ export function CampaignModal({ open, onClose, campaign, isStrategyComplete = fa
         status: campaign.status || "Draft",
         notes: campaign.notes || "",
         description: campaign.description || "",
+        priority: c.priority || "Medium",
+        primary_channel: c.primary_channel || "",
+        tags: Array.isArray(c.tags) ? c.tags : [],
       });
     } else {
-      setFormData({
-        campaign_name: "",
-        campaign_type: "Outreach",
-        goal: "",
-        owner: user?.id || "",
-        start_date: "",
-        end_date: "",
-        status: "Draft",
-        notes: "",
-        description: "",
-      });
+      setFormData({ ...emptyForm, owner: user?.id || "" });
     }
     setErrors({});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [campaign, open, user?.id]);
 
   const validate = (): boolean => {
     const newErrors: Record<string, string> = {};
-    if (!formData.campaign_name.trim() || formData.campaign_name.trim().length < 2) newErrors.campaign_name = "Campaign name is required (min 2 chars)";
-    if (!formData.campaign_type) newErrors.campaign_type = "Type is required";
-    if (!formData.owner) newErrors.owner = "Owner is required";
-    if (!formData.start_date) newErrors.start_date = "Start date is required";
-    if (!formData.end_date) newErrors.end_date = "End date is required";
+    if (!formData.campaign_name.trim() || formData.campaign_name.trim().length < 2) newErrors.campaign_name = "Name required (min 2 chars)";
+    if (!formData.campaign_type) newErrors.campaign_type = "Type required";
+    if (!formData.owner) newErrors.owner = "Owner required";
+    if (!formData.start_date) newErrors.start_date = "Required";
+    if (!formData.end_date) newErrors.end_date = "Required";
     if (formData.start_date && formData.end_date && formData.start_date >= formData.end_date) {
-      newErrors.end_date = "End date must be after start date";
+      newErrors.end_date = "Must be after start";
     }
-    if (isEditing && formData.status === "Active" && !isStrategyComplete) {
-      newErrors.status = "Complete all Strategy sections before setting Active";
-    }
-    if (isEditing && campaign?.status === "Completed" && formData.status !== "Completed") {
-      newErrors.status = "Completed campaigns cannot be reactivated";
-    }
+    if (formData.goal && formData.goal.length > 1000) newErrors.goal = "Too long";
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
   const checkDuplicateName = async (): Promise<boolean> => {
     const trimmedName = formData.campaign_name.trim();
-    const { data } = await supabase
-      .from("campaigns")
-      .select("id")
-      .ilike("campaign_name", trimmedName);
-
+    const { data } = await supabase.from("campaigns").select("id").ilike("campaign_name", trimmedName);
     if (data && data.length > 0) {
-      const duplicates = isEditing && campaign
-        ? data.filter(d => d.id !== campaign.id)
-        : data;
+      const duplicates = isEditing && campaign ? data.filter((d) => d.id !== campaign.id) : data;
       if (duplicates.length > 0) {
-        setErrors(prev => ({ ...prev, campaign_name: "A campaign with this name already exists" }));
+        setErrors((prev) => ({ ...prev, campaign_name: "Name already exists" }));
         return true;
       }
     }
     return false;
   };
 
-  const [submitting, setSubmitting] = useState(false);
-
   const handleSubmit = async () => {
     if (!validate()) return;
-
     setSubmitting(true);
     const isDuplicate = await checkDuplicateName();
     if (isDuplicate) {
       setSubmitting(false);
       return;
     }
-
     if (isEditing && campaign) {
-      updateCampaign.mutate({ id: campaign.id, ...formData }, { onSuccess: onClose, onSettled: () => setSubmitting(false) });
+      const { status, ...rest } = formData;
+      const payload = { ...rest, campaign_name: rest.campaign_name.trim() };
+      updateCampaign.mutate({ id: campaign.id, ...payload } as any, { onSuccess: onClose, onSettled: () => setSubmitting(false) });
     } else {
-      createCampaign.mutate(formData, {
+      createCampaign.mutate({ ...formData, campaign_name: formData.campaign_name.trim() }, {
         onSuccess: (data) => {
           onClose();
           if (onCreated && data?.id) onCreated(data.id);
@@ -133,41 +123,66 @@ export function CampaignModal({ open, onClose, campaign, isStrategyComplete = fa
     }
   };
 
-  const getAvailableStatuses = () => {
-    if (isEditing && campaign?.status === "Completed") return ["Completed"];
-    const statuses = ["Draft", "Paused", "Completed"];
-    if (isStrategyComplete) statuses.splice(1, 0, "Active");
-    return statuses;
-  };
-
   const ownerOptions = allUsers.map((u) => ({ id: u.id, name: u.display_name }));
+  const priorityDot = PRIORITY_OPTIONS.find((p) => p.value === formData.priority)?.dot || "bg-muted";
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="sm:max-w-[520px] max-h-[85vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-[520px] max-h-[88vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-base">{isEditing ? "Edit Campaign" : "Create Campaign"}</DialogTitle>
         </DialogHeader>
 
-        <div className="grid gap-3 py-3">
+        <div className="grid gap-2.5 py-1">
+          {/* Name */}
           <div className="space-y-1">
             <Label htmlFor="campaign_name" className="text-xs font-medium">Name *</Label>
             <Input id="campaign_name" className="h-9" value={formData.campaign_name} onChange={(e) => setFormData({ ...formData, campaign_name: e.target.value })} placeholder="Campaign name" />
             {errors.campaign_name && <p className="text-xs text-destructive">{errors.campaign_name}</p>}
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          {/* Type + Priority */}
+          <div className="grid grid-cols-2 gap-2.5">
             <div className="space-y-1">
               <Label className="text-xs font-medium">Type *</Label>
               <Select value={formData.campaign_type} onValueChange={(v) => setFormData({ ...formData, campaign_type: v })}>
                 <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {CAMPAIGN_TYPES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                  {CAMPAIGN_TYPE_OPTIONS.map((t) => (
+                    <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
               {errors.campaign_type && <p className="text-xs text-destructive">{errors.campaign_type}</p>}
             </div>
 
+            <div className="space-y-1">
+              <Label className="text-xs font-medium">Priority</Label>
+              <Select value={formData.priority} onValueChange={(v) => setFormData({ ...formData, priority: v })}>
+                <SelectTrigger className="h-9">
+                  <SelectValue>
+                    <div className="flex items-center gap-2">
+                      <span className={`h-2 w-2 rounded-full ${priorityDot}`} />
+                      <span>{formData.priority}</span>
+                    </div>
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {PRIORITY_OPTIONS.map((p) => (
+                    <SelectItem key={p.value} value={p.value}>
+                      <div className="flex items-center gap-2">
+                        <span className={`h-2 w-2 rounded-full ${p.dot}`} />
+                        <span>{p.label}</span>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {/* Owner + Channel */}
+          <div className="grid grid-cols-2 gap-2.5">
             <div className="space-y-1">
               <Label className="text-xs font-medium">Owner *</Label>
               <Select value={formData.owner} onValueChange={(v) => setFormData({ ...formData, owner: v })}>
@@ -182,9 +197,21 @@ export function CampaignModal({ open, onClose, campaign, isStrategyComplete = fa
               </Select>
               {errors.owner && <p className="text-xs text-destructive">{errors.owner}</p>}
             </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs font-medium">Channel</Label>
+              <Select value={formData.primary_channel || "none"} onValueChange={(v) => setFormData({ ...formData, primary_channel: v === "none" ? "" : v })}>
+                <SelectTrigger className="h-9"><SelectValue placeholder="Select" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">— Not set —</SelectItem>
+                  {CHANNEL_OPTIONS.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          {/* Dates */}
+          <div className="grid grid-cols-2 gap-2.5">
             <div className="space-y-1">
               <Label htmlFor="start_date" className="text-xs font-medium">Start Date *</Label>
               <Input id="start_date" type="date" className="h-9" value={formData.start_date} onChange={(e) => setFormData({ ...formData, start_date: e.target.value })} />
@@ -197,22 +224,17 @@ export function CampaignModal({ open, onClose, campaign, isStrategyComplete = fa
             </div>
           </div>
 
-          {isEditing && (
-            <div className="space-y-1">
-              <Label className="text-xs font-medium">Status</Label>
-              <Select value={formData.status} onValueChange={(v) => setFormData({ ...formData, status: v })}>
-                <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {getAvailableStatuses().map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              {errors.status && <p className="text-xs text-destructive">{errors.status}</p>}
-            </div>
-          )}
+          {/* Goal */}
+          <div className="space-y-1">
+            <Label htmlFor="goal" className="text-xs font-medium">Goal</Label>
+            <Input id="goal" className="h-9" value={formData.goal} onChange={(e) => setFormData({ ...formData, goal: e.target.value })} placeholder="e.g. 50 demos booked" />
+            {errors.goal && <p className="text-xs text-destructive">{errors.goal}</p>}
+          </div>
 
+          {/* Description */}
           <div className="space-y-1">
             <Label htmlFor="description" className="text-xs font-medium">Description</Label>
-            <Textarea id="description" value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} placeholder="What's this campaign about? Goals, audience, key notes..." rows={3} />
+            <Textarea id="description" value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} placeholder="What's this campaign about?" rows={2} />
           </div>
         </div>
 

@@ -102,7 +102,10 @@ export function CampaignContacts({ campaignId, isCampaignEnded, campaignName, ca
   const { data: campaignContacts = [] } = useQuery({
     queryKey: ["campaign-contacts", campaignId],
     queryFn: async () => {
-      const { data, error } = await supabase.from("campaign_contacts").select("*, contacts(contact_name, email, position, company_name)").eq("campaign_id", campaignId);
+      const { data, error } = await supabase
+        .from("campaign_contacts")
+        .select("*, contacts(contact_name, email, position, company_name, linkedin, phone_no)")
+        .eq("campaign_id", campaignId);
       if (error) throw error;
       return data;
     },

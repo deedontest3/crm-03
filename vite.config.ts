@@ -27,6 +27,26 @@ export default defineConfig(({ mode }) => ({
             if (id.includes('recharts') || id.includes('d3-')) return 'recharts';
             if (id.includes('lucide-react')) return 'lucide';
             if (id.includes('@radix-ui')) return 'radix';
+            if (id.includes('@hello-pangea/dnd') || id.includes('react-beautiful-dnd')) return 'dnd';
+            if (id.includes('@tanstack/react-query')) return 'query';
+            if (id.includes('date-fns')) return 'dates';
+            if (
+              id.includes('/react/') ||
+              id.includes('/react-dom/') ||
+              id.includes('/react-router-dom/') ||
+              id.includes('/react-router/') ||
+              id.includes('/scheduler/')
+            ) return 'react-vendor';
+            if (
+              id.includes('react-hook-form') ||
+              id.includes('@hookform') ||
+              id.includes('/zod/')
+            ) return 'forms';
+            if (
+              id.includes('clsx') ||
+              id.includes('tailwind-merge') ||
+              id.includes('class-variance-authority')
+            ) return 'utils';
           }
         },
       },

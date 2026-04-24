@@ -119,10 +119,13 @@ export const AccountTable = ({
       if (statusFilter !== 'all') filters.status = statusFilter;
       if (ownerFilter !== 'all') filters.account_owner = ownerFilter;
 
+      // Skip server-side sort for client-only computed columns (e.g. linked_contacts)
+      const serverSortField = sortField && sortField !== 'linked_contacts' ? sortField : undefined;
+
       const result = await fetchPaginatedData<Account>('accounts', {
         page: currentPage,
         pageSize: itemsPerPage,
-        sortField: sortField || undefined,
+        sortField: serverSortField,
         sortDirection,
         searchTerm: debouncedSearch || undefined,
         searchFields: ['account_name', 'description', 'phone', 'country', 'industry', 'company_type', 'website'],
@@ -221,16 +224,7 @@ export const AccountTable = ({
   const startIndex = (currentPage - 1) * itemsPerPage;
   const endIndex = Math.min(startIndex + itemsPerPage, totalCount);
 
-  if (loading && pageAccounts.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
-          <p className="text-muted-foreground">Loading accounts...</p>
-        </div>
-      </div>
-    );
-  }
+  // Render table chrome immediately; the body component shows skeleton rows while loading.
 
   return (
     <div className="flex flex-col h-full">
