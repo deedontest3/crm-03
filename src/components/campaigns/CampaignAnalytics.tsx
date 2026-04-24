@@ -679,7 +679,7 @@ export function CampaignAnalytics({ campaignId }: Props) {
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 {[
                   { label: "Sent",      value: emailStats.sent,      color: CHART.primary, icon: Send },
-                  { label: "Delivered", value: emailStats.delivered, color: CHART.success, icon: Inbox },
+                  { label: "Accepted",  value: emailStats.delivered, color: CHART.success, icon: Inbox },
                   { label: "Opened",    value: emailStats.opened,    color: CHART.opened,  icon: Eye },
                   { label: "Replied",   value: emailStats.replied,   color: CHART.linkedin, icon: Reply },
                   { label: "Bounced",   value: emailStats.bounced,   color: CHART.failed,  icon: AlertTriangle },
