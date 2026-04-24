@@ -419,12 +419,6 @@ export default function CampaignDetail() {
               )}
             </TabsContent>
 
-            <TabsContent value="replyHealth" className="mt-0">
-              <Suspense fallback={<TabFallback />}>
-                <ReplyHealthDashboard campaignId={campaign.id} />
-              </Suspense>
-            </TabsContent>
-
             <TabsContent value="actionItems" className="mt-0">
               <Suspense fallback={<TabFallback />}>
                 <CampaignActionItems campaignId={campaign.id} />
