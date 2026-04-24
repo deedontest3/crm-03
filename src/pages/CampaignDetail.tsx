@@ -22,6 +22,7 @@ import { format } from "date-fns";
 import { toast } from "sonner";
 import { CampaignModal } from "@/components/campaigns/CampaignModal";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { campaignTypeLabel } from "@/utils/campaignTypeLabel";
 
 // Lazy-load all heavy tab content (incl. Overview which pulls recharts)
 const CampaignOverview = lazy(() =>
@@ -241,10 +242,10 @@ export default function CampaignDetail() {
               Campaigns
             </button>
             <span className="text-xs text-muted-foreground">›</span>
-            <div className="min-w-0 flex items-baseline gap-2">
-              <h1 className="text-sm font-semibold text-foreground truncate">{campaign.campaign_name}</h1>
-              <p className="text-xs text-muted-foreground truncate hidden md:block">
-                {campaign.campaign_type} · {campaign.owner ? displayNames[campaign.owner] || "—" : "—"}
+            <div className="min-w-0 flex items-baseline gap-3">
+              <h1 className="text-xl font-semibold text-foreground truncate">{campaign.campaign_name}</h1>
+              <p className="text-sm text-muted-foreground truncate hidden md:block">
+                {campaignTypeLabel(campaign.campaign_type)} · {campaign.owner ? displayNames[campaign.owner] || "—" : "—"}
                 {campaign.start_date && campaign.end_date && (
                   <> · {format(new Date(campaign.start_date + "T00:00:00"), "d MMM")} → {format(new Date(campaign.end_date + "T00:00:00"), "d MMM")}</>
                 )}
@@ -333,12 +334,12 @@ export default function CampaignDetail() {
       {/* 4 Tabs */}
       <div className="flex-1 overflow-hidden px-6 pt-2 pb-3 flex flex-col min-h-0">
         <Tabs value={activeTab} onValueChange={(tab) => { setActiveTab(tab); if (tab === "overview") setDrilldown(null); }} className="h-full flex flex-col min-h-0">
-          <TabsList className="h-8 inline-flex w-fit gap-1 bg-transparent border-b rounded-none p-0 justify-start">
-            <TabsTrigger value="overview" className="text-xs h-8 px-3 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Overview</TabsTrigger>
-            <TabsTrigger value="setup" className="text-xs h-8 px-3 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Setup</TabsTrigger>
-            <TabsTrigger value="monitoring" className="text-xs h-8 px-3 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Monitoring</TabsTrigger>
-            <TabsTrigger value="replyHealth" className="text-xs h-8 px-3 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Reply Health</TabsTrigger>
-            <TabsTrigger value="actionItems" className="text-xs h-8 px-3 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Action Items</TabsTrigger>
+          <TabsList className="h-10 inline-flex w-fit gap-1 bg-transparent border-b rounded-none p-0 justify-start">
+            <TabsTrigger value="overview" className="text-sm font-medium h-10 px-4 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:text-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Overview</TabsTrigger>
+            <TabsTrigger value="setup" className="text-sm font-medium h-10 px-4 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:text-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Setup</TabsTrigger>
+            <TabsTrigger value="monitoring" className="text-sm font-medium h-10 px-4 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:text-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Monitoring</TabsTrigger>
+            <TabsTrigger value="replyHealth" className="text-sm font-medium h-10 px-4 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:text-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Reply Health</TabsTrigger>
+            <TabsTrigger value="actionItems" className="text-sm font-medium h-10 px-4 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:text-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Action Items</TabsTrigger>
           </TabsList>
 
           <div className="flex-1 overflow-auto mt-2 min-h-0">
@@ -380,6 +381,18 @@ export default function CampaignDetail() {
                     regionCount: (() => { try { const arr = JSON.parse(campaign.region || ""); return Array.isArray(arr) ? arr.length : 0; } catch { return campaign.region ? 1 : 0; } })(),
                     accountCount: detail.accounts.length,
                     contactCount: detail.contacts.length,
+                    reachableOnPrimary: (() => {
+                      const ch = (campaign.primary_channel || "").trim();
+                      if (!ch) return detail.contacts.length;
+                      const has = (c: any) => {
+                        const con = c.contacts || c;
+                        if (ch === "Email") return !!con?.email?.trim();
+                        if (ch === "LinkedIn") return !!con?.linkedin?.trim();
+                        if (ch === "Phone" || ch === "Call") return !!con?.phone_no?.trim();
+                        return true;
+                      };
+                      return detail.contacts.filter(has).length;
+                    })(),
                   }}
                 />
               </Suspense>

@@ -34,6 +34,8 @@ interface Props {
     regionCount: number;
     accountCount: number;
     contactCount: number;
+    /** F2: number of audience contacts reachable on the campaign's primary channel. */
+    reachableOnPrimary?: number;
   };
 }
 
@@ -86,6 +88,11 @@ export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, upd
       case "audience":
         if ((counts?.accountCount ?? 0) === 0 && (counts?.contactCount ?? 0) === 0)
           return "Add at least 1 account or contact before marking Audience as done.";
+        // F2: at least one contact must be reachable on the chosen primary channel.
+        // Skip when primary_channel isn't set yet — Message step will flag it.
+        if (counts?.contactCount && counts?.reachableOnPrimary === 0 && campaign.primary_channel) {
+          return `No audience contact is reachable on ${campaign.primary_channel}. Add contacts with valid ${campaign.primary_channel.toLowerCase()} details first.`;
+        }
         return null;
       case "message":
         if (counts && counts.emailTemplateCount === 0 && counts.phoneScriptCount === 0 && counts.linkedinTemplateCount === 0)
@@ -158,13 +165,13 @@ export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, upd
     timing: <Clock className="h-[18px] w-[18px]" />,
   };
 
-  // Unified header styling — all sections use the Region (blue) theme
-  const unifiedStyle = { header: "bg-blue-500/10 hover:bg-blue-500/15", icon: "text-blue-600 dark:text-blue-400", border: "border-l-4 border-l-blue-500" };
+  // Per-section color theming (Region=blue, Audience=emerald, Message=purple, Timing=amber)
+  // matches the rest of the app's color language and aids visual scanning.
   const sectionStyles: Record<string, { header: string; icon: string; border: string }> = {
-    region:   unifiedStyle,
-    audience: unifiedStyle,
-    message:  unifiedStyle,
-    timing:   unifiedStyle,
+    region:   { header: "bg-blue-500/10 hover:bg-blue-500/15",    icon: "text-blue-600 dark:text-blue-400",       border: "border-l-4 border-l-blue-500" },
+    audience: { header: "bg-emerald-500/10 hover:bg-emerald-500/15", icon: "text-emerald-600 dark:text-emerald-400", border: "border-l-4 border-l-emerald-500" },
+    message:  { header: "bg-purple-500/10 hover:bg-purple-500/15", icon: "text-purple-600 dark:text-purple-400",   border: "border-l-4 border-l-purple-500" },
+    timing:   { header: "bg-amber-500/10 hover:bg-amber-500/15",   icon: "text-amber-600 dark:text-amber-400",     border: "border-l-4 border-l-amber-500" },
   };
 
   // Order: Region → Audience → Message → Timing
@@ -230,7 +237,18 @@ export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, upd
                 </div>
               </CollapsibleTrigger>
               <CollapsibleContent className="data-[state=open]:animate-accordion-down data-[state=closed]:animate-accordion-up overflow-hidden">
-                <div className="pt-1 pb-3 px-3">
+                <div className="pt-1 pb-3 px-3 space-y-3">
+                  {(() => {
+                    const hint = validateSection(section.key);
+                    if (!section.done && hint) {
+                      return (
+                        <div className={`text-[12px] rounded-md px-3 py-2 ${sectionStyles[section.key].header} ${sectionStyles[section.key].icon}`}>
+                          {hint}
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
                   {section.key === "region" && <CampaignRegion campaign={campaign} />}
                   {section.key === "audience" && (
                     <CampaignAudience
@@ -260,6 +278,29 @@ export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, upd
                       onSaveTimingNotes={handleSaveTimingNotes}
                     />
                   )}
+                  {/* Footer "Mark as Done" — bigger affordance than the tiny header circle. */}
+                  <div className="pt-2 border-t flex justify-end">
+                    {section.done ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleUnmark(section.flag, section.label)}
+                        className="text-xs gap-1.5"
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
+                        Marked done — click to unmark
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        onClick={() => handleMarkDone(section.flag, section.label, section.key)}
+                        className="text-xs gap-1.5"
+                      >
+                        <Circle className="h-3.5 w-3.5" />
+                        Mark {section.label} as Done
+                      </Button>
+                    )}
+                  </div>
                 </div>
               </CollapsibleContent>
             </Collapsible>

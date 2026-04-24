@@ -220,7 +220,8 @@ Deno.serve(async (req) => {
     });
 
     const pdfBytes = await pdfDoc.save();
-    return new Response(pdfBytes, {
+    // Wrap in Blob so the response body satisfies BodyInit (Uint8Array alone fails Deno type-check).
+    return new Response(new Blob([pdfBytes], { type: "application/pdf" }), {
       status: 200,
       headers: {
         ...corsHeaders,

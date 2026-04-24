@@ -10,6 +10,22 @@ import { useAuth } from "@/hooks/useAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "@/hooks/use-toast";
 
+// F3: Normalize a company name for fuzzy matching — strips suffixes like
+// ", HQ", ", Germany", "Inc.", "GmbH" and collapses whitespace/punctuation.
+// Without this, contacts whose `company_name` differs by punctuation from
+// `account_name` (e.g. "Eberspaecher, HQ" vs "Eberspaecher") silently fail
+// to attach.
+function normalizeCompany(name: string | null | undefined): string {
+  if (!name) return "";
+  return name
+    .toLowerCase()
+    .replace(/\b(inc|llc|ltd|gmbh|corp|corporation|co|company|hq|headquarters)\b\.?/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .join(" ");
+}
+
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -68,17 +84,20 @@ export function AddContactsModal({ open, onOpenChange, campaignId, forAccount, e
   });
 
   const availableContacts = useMemo(() => {
+    const accountNorm = forAccount ? normalizeCompany(forAccount.name) : "";
+    const campaignNormSet = new Set(campaignAccountNames.map((n: string) => normalizeCompany(n)));
     return allContacts.filter((c) => {
       if (existingContactIds.includes(c.id)) return false;
       if (!c.contact_name.toLowerCase().includes(searchTerm.toLowerCase())) return false;
       if (channelFilter === "Email" && !c.email?.trim()) return false;
       if (channelFilter === "LinkedIn" && !c.linkedin?.trim()) return false;
       if (channelFilter === "Phone" && !c.phone_no?.trim()) return false;
+      const contactNorm = normalizeCompany(c.company_name);
       if (forAccount) {
-        return c.company_name && c.company_name.toLowerCase() === forAccount.name.toLowerCase();
+        return !!contactNorm && contactNorm === accountNorm;
       }
       if (campaignAccountNames.length > 0) {
-        return c.company_name && campaignAccountNames.some((name: string) => name.toLowerCase() === c.company_name!.toLowerCase());
+        return !!contactNorm && campaignNormSet.has(contactNorm);
       }
       return true;
     });
@@ -100,7 +119,8 @@ export function AddContactsModal({ open, onOpenChange, campaignId, forAccount, e
       const contact = allContacts.find((c) => c.id === contact_id);
       let accountId: string | null = null;
       if (contact?.company_name) {
-        const matched = campaignAccounts.find((ca: any) => ca.accounts?.account_name?.toLowerCase() === contact.company_name!.toLowerCase());
+        const contactNorm = normalizeCompany(contact.company_name);
+        const matched = campaignAccounts.find((ca: any) => normalizeCompany(ca.accounts?.account_name) === contactNorm);
         if (matched) accountId = matched.account_id;
       }
       return { campaign_id: campaignId, contact_id, account_id: accountId, created_by: user!.id, stage: "Not Contacted" };

@@ -77,6 +77,13 @@ export function getOutreachCounts(comms: any[]) {
   // Tile rule: email = OUTBOUND thread count, call/linkedin = unique contacts.
   // Replies, follow-ups and pure-inbound threads must NOT inflate these numbers.
   const emailThreadCount = outboundThreads.length;
+  // F7: uniqueTouchedContacts = single contact_id touched on ANY channel,
+  // counted once. Used by the funnel to clamp `Contacted` to ≤ Total Contacts.
+  const uniqueTouchedContacts = new Set<string>([
+    ...contacts.emailContactIds,
+    ...contacts.callContactIds,
+    ...contacts.linkedinContactIds,
+  ]).size;
   return {
     threads,
     outboundThreads,
@@ -84,6 +91,7 @@ export function getOutreachCounts(comms: any[]) {
     calls: contacts.callContacts,
     linkedin: contacts.linkedinContacts,
     total: emailThreadCount + contacts.callContacts + contacts.linkedinContacts,
+    uniqueTouchedContacts,
     // Raw row counts kept for places that explicitly need them
     rawEmailThreads: threads.length,
     rawCalls: calls.length,

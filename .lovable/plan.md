@@ -1,176 +1,150 @@
 
 
-# Campaign workflow audit — bugs found and fixes
+# Campaign Workflow — End-to-End Audit & Improvements
 
-I walked the workflow end-to-end (create → 4-step Setup → Monitoring/send → Analytics/Reply Health) against your live data. Below is what's broken or off, grouped by severity, plus the concrete fix for each.
-
----
-
-## 1. Critical — runaway "chronology" skip-log spam
-
-**What I see in the database**
-- `cron.job` `check-email-replies-every-5-min` runs `*/5 * * * *`.
-- `email_reply_skip_log` already has 15 rows, **all** `skip_reason='chronology'`, **all** for the same Lukas reply (`Re: Boosting Realthingks's Growth in EU`, conversation `…AAAQAEWrowezDMtNpHcsPI-wXZ4=`), inserted every 5 minutes since 05:45 UTC.
-- The reply legitimately belongs to **Campaign 1** ("test 1") where contact Lukas was sent that exact subject at 11:20:26 — and a valid graph-sync row already exists for it. But on every cron tick the function also evaluates **Campaign 2** ("Campaign 2"), which sent a different subject (`Boosting Automotive Virtualization at Realthingks`) to the same contact at 03:56 today. Outlook re-uses the same `conversationId` for both, the bucket-resolver picks Campaign 2 first, the chronology gate fails (reply pre-dates the Campaign 2 outbound), and a new skip row is written.
-
-**Two bugs combined**
-- The function never deduplicates against the skip log — it re-inserts the same `(conversation_id, internet_message_id, skip_reason)` row every run.
-- Bucket selection inside `check-email-replies` uses `bucketsByConvId.get(msg.conversationId)` returning candidate keys across **all campaigns**, then ranks by "newest outbound". When the same contact has older sent emails in another campaign with the same conversation_id, the wrong campaign wins.
-
-**Fix**
-- In `supabase/functions/check-email-replies/index.ts`, before calling `logSkip(...)`, check whether an identical row already exists (`internet_message_id + skip_reason`) and skip the insert if it does.
-- Tighten bucket scoring: prefer buckets where the **parent's `internet_message_id` appears in the reply's `Graph in-reply-to` chain**, then by subject compatibility, then by chronology. Only after all of these fail should chronology be logged.
-- Add a unique index `email_reply_skip_log_dedupe_idx` on `(conversation_id, sender_email, skip_reason)` with `WHERE conversation_id IS NOT NULL` so duplicate inserts are no-ops at the DB layer too.
+I walked the full flow on your live data: **Campaign 2** (Draft, EU + Asia) and **test 1** (Active) — including the **TEST** account and the **Test 1 / Test 2 lukas schleicher** contacts. I found a mix of real bugs, UX gaps, and consistency issues across all 5 stages: **Create → Setup (Region/Audience/Message/Timing) → Activate → Monitoring (send email) → Analytics**.
 
 ---
 
-## 2. Critical — Re-sync result is always "0 inserted" when scoping by contact
+## 🔴 Bugs found
 
-`runResync(contactScope)` derives `contactScope` from the open thread's composite key, which is always `<conversation>::<contactId-of-the-bucket-shown>`. When you open the orphan/skipped thread under Campaign 2 and click **Re-sync replies**, the function gets `contact_id = b896c4d8-…` (Lukas in Campaign 2's bucket), but Campaign 2 has no Lukas outbound matching the reply's subject, so the result is always `inserted: 0`.
+### B1. Build is broken — Edge Function won't deploy
+`supabase/functions/email-skip-report/index.ts` line 223: `new Response(pdfBytes, …)` — `pdfBytes` is `Uint8Array`, which fails Deno type checks. **All edge functions fail to deploy** until this is fixed (wrap in `new Uint8Array(pdfBytes).buffer` or pass `pdfBytes as BodyInit`).
 
-**Fix**
-- After `runResync` finishes, if `inserted === 0` and `skipped.subject_mismatch + skipped.chronology > 0`, automatically retry **without** `contact_id` (campaign-scope only) and surface a single combined result.
-- In the result dialog, when `correlation_id` is present, always render the "View skipped replies" deep-link even if `inserted > 0`, and show the per-reason counts as filter chips.
+### B2. New-campaign modal silently strips Region & Tags
+`CampaignModal` form has fields for Name, Type, Priority, Owner, Channel, Dates, Goal, Description — but **no Region, no Tags, no Notes**. Users can't seed regions on creation; they must open the campaign and use the Region step.
 
----
+### B3. Region card data shape mismatch
+`CampaignRegion` writes JSON like `[{country, region, timezone}]` to `campaigns.region`. Several downstream consumers (`CampaignAudience.parseSelectedCountries`, dashboard CSV export, Overview region badges) parse this, but **`campaigns.country` (a separate scalar column) is never updated** — so any code that still reads `campaign.country` shows blank (e.g. AddContactsModal `selectedCountries` prop, certain CSV columns).
 
-## 3. High — Two competing React-Query keys for the same campaign data
+### B4. Strategy "Audience done" flag can be marked with 0 reachable contacts
+`validateSection("audience")` only checks `accountCount > 0 OR contactCount > 0`. The **TEST** account (your test data) was added with status `Not Contacted` and has 2 contacts both with `region = "EU"` — but the campaign region is **EU + Asia**, so the audience filter shows them. However: **"audience done" can be ticked even when 0 contacts are reachable on the campaign's primary channel**, which then blocks the user inside Monitoring.
 
-`CampaignAudienceTable` uses `["campaign-audience-accounts", campaignId]` and `["campaign-audience-contacts", campaignId]`, while `CampaignAccounts`, `CampaignContacts`, `CampaignAnalytics`, `useCampaignDetail`, and `EmailComposeModal` use `["campaign-accounts", campaignId]` / `["campaign-contacts", campaignId]` (sometimes with a `"detail"` / `"analytics"` / `"monitoring"` suffix, sometimes not).
+### B5. AddContactsModal scopes by `company_name` string equality (case-insensitive)
+For account "TEST", contacts `Test 1 lukas schleicher` and `Test 2 Lukas Schleicher` both have `company_name = "TEST"` — they show. But for any account where the contact's `company_name` differs by punctuation/whitespace from `account_name` (e.g. "Eberspaecher, HQ, Germany" vs "Eberspaecher"), contacts won't match. This is silent — users see "No matching contacts".
 
-Removing a contact from the Audience tab invalidates the `audience-*` key but not the `campaign-contacts` keys, so:
-- Setup → Audience shows the contact gone.
-- Setup → Audience contact-counter (passed via `contentCounts.contactCount` from `useCampaignDetail`) still shows the old number until a hard refresh.
-- Monitoring → email recipient dropdown still lists the removed contact.
+### B6. Reply-status doesn't propagate to contact stage consistently
+Looking at your data: contact `test3` for campaign **test 1** has stage `Responded` (correct — there's an inbound `delivery_status: received`). But `test1` also has a `Re: …Test 1` inbound row and is correctly `Responded`. However `test4` and `test5` were sent to but show `Email Sent`, not `Not Contacted` — the contact-stage updater works for sends but doesn't roll back if a send later fails. There's no clear logic for **Failed** → stage handling.
 
-**Fix**
-- Consolidate to one canonical key per dataset: `["campaign-accounts", campaignId]` and `["campaign-contacts", campaignId]`. Drop the `"detail"`, `"analytics"`, `"monitoring"`, `"audience"` suffixes — they all hit the same table; differentiate via `select` only.
-- Update `CampaignAudienceTable` realtime handler and remove modal to invalidate the canonical keys.
-- In `useCampaignDetail`, broaden `select(...)` to include the columns Audience needs so we never have to keep two separate fetches.
+### B7. Communications: "Not Contacted" check uses raw outbound rows, not threads
+On the Monitoring tab, the eligible-recipient counter for "send first email" filters by `stage === 'Not Contacted'`. But `bcef732d…` (Campaign 2) shows `test1, test2, Lukas Schleicher` already at `Email Sent` while `Test 1/2 lukas schleicher` (the new contacts you wanted to test) sit at `Not Contacted`. ✅ Send works for them — good. But if the same contact appears in 2 campaigns, the modal shows them as eligible in both even after sending — because `campaign_contacts.stage` is per-campaign only; there's no cross-campaign throttle/warning.
 
----
+### B8. Activation gate doesn't check timing
+Activation requires all 4 strategy flags. But you can activate a campaign whose **start_date is in the future** with no warning — and the Send Email button on Monitoring will then 400 because outreach is gated by `isWithinTimingWindow()`. The user sees no message saying "Wait until start date".
 
-## 4. High — Audience account-status logic disagrees with itself
+### B9. Send Email modal lets you send to contacts whose region isn't in the campaign region list
+TEST contacts have `region = "EU"`. Campaign 2 has both EU and Asia. Fine. But if the campaign were Asia-only, the Audience table would hide them while the Email Compose modal (`contactsProp` is the full campaign-contacts array) would still show them. No region cross-check at send time.
 
-Two functions compute "account status from contacts" in slightly different ways:
-- `CampaignAccounts.tsx` → returns `Deal Created` when any contact's stage is `Qualified`.
-- `CampaignContacts.tsx::deriveAccountStatus` → same, but `recomputeAccountStatus` writes the value back to `campaign_accounts.status`.
-- The reactivity is one-way: `CampaignAccounts` derives on the fly and ignores the persisted `status`, while every other place reads `campaign_accounts.status`.
+### B10. Overview "Engagement Funnel" double-counts
+`getOutreachCounts()` mixes thread counts (email) with row counts (call/linkedin). The funnel's `Contacted` cumulative bucket can exceed `Total` when a contact is touched on multiple channels — visually breaks the descending funnel.
 
-Result: stage `Converted` (used in Analytics' funnel) is treated differently from `Qualified` (used here). When an admin marks a contact `Converted`, the account stays `Responded`.
+### B11. Analytics tab spends bandwidth refetching the same data
+`CampaignAnalytics` does its own `campaign-accounts/contacts/communications` queries with different `staleTime` than Overview, so switching tabs triggers re-fetches even though `CampaignDetail` already hydrated them. ~3× duplicated queries.
 
-**Fix**
-- Move `deriveAccountStatus` into a single helper `src/utils/campaignStatus.ts` and make both files import it.
-- Treat both `Qualified` and `Converted` as `Deal Created` everywhere.
-- Make `CampaignAccounts` always read `ca.status` from the DB row (since `recomputeAccountStatus` keeps it fresh) and only derive on the fly when `ca.status` is null.
+### B12. Reply detection writes provider-sync rows that can lack `contact_id`
+Schema allows `campaign_communications.contact_id` to be NULL. The `getOutreachContactCounts` helper guards with `if (!c.contact_id) return;`, but the dashboard tile counters in `CampaignDashboard` don't — undercounting/overcounting depending on the metric.
 
----
+### B13. No way to **resend** a failed email from Monitoring
+A send that returns `delivery_status: failed` is logged with stage update, but the row is never retried, and there's no "Retry send" button surfaced anywhere.
 
-## 5. High — Campaign Modal "Edit" navigation in the list page
-
-In `src/pages/Campaigns.tsx`, opening the Edit modal works from the row, but the `Actions ▸ Edit` button on the campaign detail page calls `setEditOpen(true)` while the modal already has a stale `campaign` prop bound at mount. If you switch to a different campaign without unmounting the page (very rare but possible via prefetch), the modal shows the wrong campaign for one render. More importantly, the "duplicate name" check in `CampaignModal.checkDuplicateName` uses `ilike(campaign_name, trimmed)` — this matches partial names containing wildcards (`%`, `_`) typed by the user, throwing false positives.
-
-**Fix**
-- In `CampaignModal`, escape `%` and `_` before calling `ilike`, or switch to `eq` since names are user-visible exact strings now.
-- Add a `key={campaign?.id || "new"}` on `<CampaignModal>` in both pages so React fully remounts on identity change.
+### B14. Header subtitle (`CampaignDetail.tsx` line 247) uses raw `campaign.campaign_type`
+Skips `campaignTypeLabel()`, so types like `"new_outreach"` show un-prettified.
 
 ---
 
-## 6. High — Setup → Region progress count is wrong for legacy data
+## 🟡 Layout / UX issues
 
-`CampaignStrategy` computes `regionCount` inline:
-```ts
-try { const arr = JSON.parse(campaign.region || ""); return Array.isArray(arr) ? arr.length : 0; } catch { return campaign.region ? 1 : 0; }
-```
-But `parseSelectedRegions` upstream already dedupes on `r.region` — so a campaign with two countries inside one region (e.g. `[{region:"EU", country:"DE"}, {region:"EU", country:"FR"}]`) reports `regionCount = 2`, while the validator and the Region tab show "1 region". The "Mark Region as done" gate then succeeds when there's only 1 region, which is fine, but the badge reads "2/4 → 3/4" inconsistently.
-
-**Fix**
-- Reuse `parseSelectedRegions(campaign.region).length` as the canonical count. Move the helper into `src/utils/campaignRegion.ts` and import in both places.
-
----
-
-## 7. Medium — `CampaignContacts` fetches contacts without `contact_owner` for RLS preview
-
-The Add Contacts modal (`AddContactsModal.fetchAllContacts`) selects `id, contact_name, email, position, company_name, phone_no, linkedin` — fine for non-admins because RLS on `contacts` only returns rows where `created_by = auth.uid()` OR `contact_owner = auth.uid()`. So **a non-admin user sees only their own contacts** when trying to add to a shared campaign, even though the campaign is shared. The Audience table then silently shows fewer contacts than the count in the global Contacts module.
-
-**Fix**
-- Add an explanatory empty-state in the modal: "Showing only contacts you own. Ask the contact owner to share or transfer to make them targetable."
-- Optional: introduce a `can_view_contact_for_campaign(...)` security-definer function so campaign collaborators can target contacts they don't own.
+| # | Where | Issue |
+|---|---|---|
+| L1 | `CampaignDetail` header (line 245) | Title `text-sm` is too small vs other modules' `text-xl`. Subtitle truncates on narrow screens. |
+| L2 | Tabs (line 336) | `h-8`, `text-xs`, no active-state pill — looks faded next to Deals/Contacts which use `h-10`. |
+| L3 | Strategy sections | All 4 use the same blue header (`unifiedStyle`). Color variety would aid scanning (Region=blue, Audience=emerald, Message=purple, Timing=amber) and matches the rest of the app's color language. |
+| L4 | Strategy "Mark done" check icon | Uses tiny circle — easy to miss. Better: full-width "Mark Done" button in the section's open state. |
+| L5 | Audience table | Add Account button is in the toolbar; Add Contacts is hidden inside an account row's action menu — discoverability poor. |
+| L6 | AddAccounts modal | Doesn't show region/country mismatch warnings; no "this account has 0 contacts" hint until expanded. |
+| L7 | Message step | 3 sub-tabs (Email / Phone / LinkedIn) with no "what's required" badge — users hit "Mark Done" then get a blocking toast. |
+| L8 | Timing step | Doesn't show a calendar visualisation of windows; just a list. |
+| L9 | EmailCompose | "Bulk" mode hides the per-recipient preview by default — users send blind to N people. |
+| L10 | Monitoring email tab | Status filter chips ("All / Sent / Replied / Failed / Bounced") have no counts; have to read each row. |
+| L11 | Communications row expand | Replies and originals share one row; no visual gutter showing direction (in/out arrow). |
+| L12 | Analytics | KPI tiles are large but the funnel + heatmap below scroll past the fold on a 1080p screen — needs collapsible "advanced metrics" section. |
+| L13 | Overview | `Quick start` empty-state reuses small icons; doesn't match the app-wide empty-state pattern with full-card illustration + CTA. |
+| L14 | Whole module | No keyboard shortcut hints in any of the sub-tab toolbars (the list view has them; detail view doesn't). |
 
 ---
 
-## 8. Medium — Reply Health PDF download is broken in browsers
+## ✨ Functional improvements
 
-`ReplyHealthDashboard.downloadPdf` does:
-```ts
-const { data } = await supabase.functions.invoke("email-skip-report", { body: ... });
-const blob = data instanceof Blob ? data : new Blob([data as ArrayBuffer], { type: "application/pdf" });
-```
-`supabase.functions.invoke` parses the body based on `Content-Type`. The edge function returns `application/pdf` so `data` is already an `ArrayBuffer`/`Blob`, but in some cases (e.g. when CORS pre-flight strips Content-Type) the SDK falls back to `text/plain` and returns a corrupted string. The user gets a "PDF failed" toast or a 0-byte file.
+### F1. Region: write **both** the JSON blob AND `country`/`region` scalar columns
+Update `CampaignRegion.handleSave()` to also `update({ country: cards[0].country, region: <json> })` so the legacy single-value consumers still work.
 
-**Fix**
-- Switch to a direct `fetch` against `${VITE_SUPABASE_URL}/functions/v1/email-skip-report` with an `Authorization: Bearer ${anonKey}` header, then `await resp.blob()`. Apply the same fix in `EmailSkipAuditTable.downloadPdf`.
+### F2. Audience completeness: validate on **reachable contacts on primary channel**
+`validateSection("audience")` should additionally enforce: `at least 1 contact has the primary channel reachable (email/phone/linkedin)`. Use `isReachableEmail/Phone/LinkedIn` helpers.
 
----
+### F3. AddContactsModal: case-insensitive + fuzzy company match
+Replace the strict `company_name === account_name` filter with a normalize-and-trim match (strip ", HQ, …" suffixes, lower, trim) so contacts attached to "Eberspaecher" join its account.
 
-## 9. Medium — Email Compose modal doesn't enforce the campaign's primary channel
+### F4. Activation gate adds **start-date check**
+In `CampaignDetail.handleStatusChange`, when activating, if `start_date > today`, show toast: "Campaign starts on DD MMM. Activating will queue it; sends will be blocked until then."
 
-`EmailComposeModal` happily lets you bulk-send to contacts even when `campaign.primary_channel = 'LinkedIn'` or `Phone`. There is no warning. Combined with the missing "audience reachable" guard, this leads to mixed-channel logs that pollute Analytics' channel-mix donut.
+### F5. Send Email modal — recipient region cross-check
+Filter `contactsProp` by `selectedRegions` from the campaign before showing in Email Compose. Show a small banner: "Hidden N contacts whose region isn't in this campaign's scope."
 
-**Fix**
-- When `campaign.primary_channel` is set and ≠ `Email`, show an inline yellow banner at the top of the modal: *"This campaign's primary channel is {channel}. Are you sure you want to send email instead?"* with a "Continue anyway" toggle that must be enabled before Send is allowed.
+### F6. Status filter chips with counts on Monitoring
+`Sent (12) · Replied (3) · Failed (1) · Bounced (0)` — derive from already-loaded comms.
 
----
+### F7. Engagement Funnel — cumulative model with row-count clamp
+On Overview, change `getOutreachCounts` to ensure `Contacted ≤ Total` by counting **unique contact_ids touched on any channel**, not summing channels.
 
-## 10. Medium — `parseSelectedRegions` ignores legacy single-string regions
+### F8. "Retry failed send" button in Monitoring email rows
+For rows with `delivery_status === 'failed'`, add a small `RotateCw` button → re-invokes `send-campaign-email` with the same payload.
 
-`CampaignStrategy.parseSelectedRegions` only returns regions when `JSON.parse(raw)` returns an array. For older campaigns where `region = "EU"` (plain string), the function returns `["EU"]`, but the inner `parseSelectedRegions` in `CampaignAudience.tsx` returns `[]` because the JSON parse throws. So the Audience filter applied for those campaigns is empty and shows all contacts globally, ignoring region targeting.
+### F9. Lift fetch for accounts/contacts/communications to `CampaignDetail`
+`CampaignAnalytics` and `CampaignOverview` should accept these as props (already does for Overview). Remove duplicate queries in `CampaignAnalytics`.
 
-**Fix**
-- Make both helpers identical; default to `raw && !raw.startsWith("[") ? [raw] : []` for the non-JSON path.
+### F10. Strategy color & layout polish
+- Region: blue · Audience: emerald · Message: purple · Timing: amber
+- Open section adds a footer-bar "Mark as Done" button (full width, tinted)
+- Validation hint shown inline (under the section header) so users know what's required before clicking
 
----
+### F11. Header polish (CampaignDetail)
+- Title `text-xl font-semibold`
+- Subtitle uses `campaignTypeLabel()`, shows owner avatar + name
+- Tabs `h-10`, `text-sm`, active state with a primary background pill
 
-## 11. Medium — Send Email button is hidden when `viewMode = analytics`
+### F12. Empty-state polish
+- Audience with 0 accounts → big "Add your first account" card with CTA
+- Message with 0 templates → tabbed empty state with "Use AI to draft" CTA
+- Monitoring with 0 sent → "Send your first email" CTA that opens compose
 
-In `CampaignCommunications`, the toolbar conditionally renders Send Email and Log Activity (`showSendEmail`, `showLogActivity`). When the user navigates from Overview "Open replies → monitoring → analytics", they are stuck on Analytics with no way to send a reply without first toggling back to Outreach. The toggle is far right and discoverable, but it's still a UX dead-end if the screen is narrow and the toggle wraps.
+### F13. Add "Eligible recipients" mini-summary on Monitoring
+Above the status chips: `12 contacts · 9 reachable on email · 3 not contacted`. Click → filters table.
 
-**Fix**
-- Always render the Send Email / Log Activity buttons; only the channel-table area should switch between Outreach and Analytics.
-
----
-
-## 12. Low — Misc UI / behavioural papercuts
-
-- `CampaignAccounts.tsx` "Open" icon navigates to `/accounts` (full list) instead of `/accounts/{id}` — clicking the link loses context. Switch to the account detail route or open the AccountModal in view mode.
-- `CampaignTiming.tsx` accepts `start_date >= end_date` for windows (only the parent campaign blocks this). Add the same `>=` check on the windows form.
-- `CampaignModal.tsx` "Owner" dropdown uses an empty-string value when there are no profiles loaded yet, which Radix Select rejects in dev builds (`SelectItem` requires non-empty value). Fall back to a single placeholder item with `value={user.id}` (already handled, but the surrounding Select prop is `value=""` initially — set initial state to `user.id` instead).
-- `useCampaigns.cloneCampaign` clones email templates and accounts but **not** the `campaign_timing_windows` and `campaign_follow_up_rules`. Cloning a fully-configured campaign loses these and the "Strategy 4/4" badge becomes misleading.
-- `CampaignAnalytics` `funnel` deduplicates "Deal Created ≤ Qualified" but doesn't handle "Qualified ≤ Responded" when Responded is computed from contact stage. With your test data `responded.length = 1` but `qualified = 1` too — both stages are equally high. Add the same monotonic guard at every step (already done — verify nothing has shifted after the cleanup above).
-- `CampaignDetail` has a "Reply Health" tab AND a "Monitoring → Analytics" toggle that both pull similar data. Consider folding Reply Health into a sub-tab of Monitoring to reduce top-level tab count.
-- The detail header status dropdown does not show the "Activate" warning when start date is in the future and shows it elsewhere — the AlertDialog body has the warning, but when you click "Activate" from the dropdown it still proceeds without confirmation. Verify `setActivateOpen(true)` is gating in all paths.
-
----
-
-## 13. Test data observations
-
-- Account **TEST** (id `0a8140b0-…`) is correctly set: region=Asia, country=India. It has no phone — Audience will show "no phone" amber dot for any contacts in it that also lack a phone.
-- Contacts **Test 1 lukas schleicher** and **Test 2 Lukas Schleicher** (`f617dd33-…`, `e2439f53-…`) have `company_name="TEST"`, `region=EU` — but the TEST account is region=Asia. The Audience country filter (Asia) will hide them. To complete your end-to-end flow: edit the contacts to `region=Asia` or change the campaign region to include EU.
-- Both contacts have email but no LinkedIn or phone — only the Email channel is reachable (matches Campaign 2's `primary_channel=Email`).
+### F14. Cross-campaign throttle warning
+When sending email to a contact who already received a campaign email in the last 7 days (any campaign), show an amber "Recent contact" tag in the recipient picker.
 
 ---
 
-## Implementation order (when you approve)
+## 🛠 Files to edit
 
-1. Fix `check-email-replies` skip-log dedup + bucket scoring (#1) + DB unique index migration.
-2. Fix Re-sync auto-fallback and result deep-link (#2).
-3. Consolidate React-Query keys in detail/audience/monitoring/analytics (#3).
-4. Unify `deriveAccountStatus` and `regionCount` helpers (#4, #6, #10).
-5. Fix duplicate-name `ilike` escape, modal `key`, clone completeness (#5, #12 sub-items).
-6. Fix Reply Health / Audit PDF blob download (#8).
-7. Add primary-channel guard to EmailCompose (#9).
-8. Always-render Send/Log buttons + account link target (#11, #12).
-9. Optional polish: explanatory empty-state in AddContactsModal (#7), fold Reply Health into Monitoring tabs (#12).
+| File | Changes |
+|---|---|
+| `supabase/functions/email-skip-report/index.ts` | **Fix build:** wrap pdfBytes in `Blob` or cast as `BodyInit` |
+| `src/components/campaigns/CampaignModal.tsx` | Add Region quick-picker (multi-region) + Tags input + Notes |
+| `src/components/campaigns/CampaignRegion.tsx` | Mirror first card to `campaigns.country/region` scalar |
+| `src/components/campaigns/CampaignStrategy.tsx` | Per-section colors, footer "Mark Done" button, inline validation hint |
+| `src/components/campaigns/CampaignStrategy.tsx` (validate) | F2: reachable-on-primary-channel check |
+| `src/components/campaigns/AddContactsModal.tsx` | F3: fuzzy company match (normalize) |
+| `src/pages/CampaignDetail.tsx` | F4 + F11: activation start-date gate, header polish, tabs `h-10/text-sm`, fix `campaignTypeLabel` |
+| `src/components/campaigns/EmailComposeModal.tsx` | F5 + F14: region cross-check banner; recent-contact tag |
+| `src/components/campaigns/CampaignCommunications.tsx` | F6 + F8 + F13: counts on chips, retry button, eligible summary |
+| `src/components/campaigns/overviewMetrics.ts` | F7: unique-contact cumulative funnel |
+| `src/components/campaigns/CampaignAnalytics.tsx` | F9: accept already-fetched data via props (or rely on shared queryKeys, no refetch) |
+| `src/components/campaigns/CampaignAudienceTable.tsx` | L5: hoist "Add Contacts" to a primary toolbar button next to "Add Accounts" |
+| `src/components/campaigns/CampaignTiming.tsx` | L8: add a 30-day mini calendar showing windows |
 
-No new tables required; one DB migration adds the unique index on `email_reply_skip_log` and a small RPC for safe campaign-scoped contact visibility (only if you want #7 enforced on the server). Everything else is application-level.
+## Out of scope
+- Database schema changes (the data model is fine).
+- Reply-detection edge function logic (already heavily tuned).
+- Removing/renaming any tabs.
 
