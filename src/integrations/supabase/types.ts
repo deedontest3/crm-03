@@ -2076,6 +2076,10 @@ export type Database = {
         }
         Returns: undefined
       }
+      promote_contact_on_reply: {
+        Args: { _campaign_id: string; _contact_id: string }
+        Returns: undefined
+      }
       update_user_role: {
         Args: { p_role: string; p_user_id: string }
         Returns: undefined
