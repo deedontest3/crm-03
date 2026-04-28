@@ -1327,50 +1327,6 @@ export function CampaignCommunications({ campaignId, isCampaignEnded, isReadOnly
   ];
 
   // --- Inline filter controls (rendered inside the unified toolbar) ---
-  // E6: export the currently filtered comms to CSV.
-  const exportCurrentToCsv = () => {
-    const rows: any[] = outreachTab === "email" ? emailFiltered
-      : outreachTab === "linkedin" ? linkedinFiltered
-      : outreachTab === "call" ? callFiltered
-      : communications;
-    if (!rows || rows.length === 0) {
-      toast({ title: "Nothing to export", description: "There are no rows in the current view." });
-      return;
-    }
-    const headers = [
-      "date","channel","contact_name","contact_email","account_name","subject",
-      "email_status","email_type","call_outcome","linkedin_status","sent_via","owner",
-    ];
-    const esc = (v: any) => {
-      const s = v == null ? "" : String(v);
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-    const lines = [headers.join(",")];
-    for (const r of rows) {
-      lines.push([
-        r.communication_date || r.created_at || "",
-        r.communication_type || "",
-        r.contacts?.contact_name || "",
-        r.contacts?.email || r.recipient_email || "",
-        r.accounts?.account_name || "",
-        r.subject || "",
-        r.email_status || "",
-        r.email_type || "",
-        r.call_outcome || "",
-        r.linkedin_status || "",
-        r.sent_via || "",
-        r.owner || "",
-      ].map(esc).join(","));
-    }
-    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `campaign-${outreachTab}-comms-${new Date().toISOString().slice(0,10)}.csv`;
-    document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
-    toast({ title: "Export ready", description: `${rows.length} row${rows.length === 1 ? "" : "s"} exported.` });
-  };
 
   const renderFilterControls = () => (
     <>
