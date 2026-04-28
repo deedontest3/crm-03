@@ -1391,17 +1391,6 @@ export function CampaignCommunications({ campaignId, isCampaignEnded, isReadOnly
           </SelectContent>
         </Select>
       )}
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="h-7 px-2 text-xs gap-1"
-        onClick={exportCurrentToCsv}
-        title="Export the current view to CSV"
-      >
-        <Download className="h-3 w-3" />
-        Export
-      </Button>
     </>
   );
 
@@ -1985,6 +1974,25 @@ export function CampaignCommunications({ campaignId, isCampaignEnded, isReadOnly
             )}
           </TabsList>
 
+          {viewMode && onViewModeChange && (
+            <div className="inline-flex h-7 items-center rounded-md border bg-muted/40 p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => onViewModeChange("outreach")}
+                className={`px-2 h-6 rounded-sm transition-colors ${viewMode === "outreach" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                Outreach
+              </button>
+              <button
+                type="button"
+                onClick={() => onViewModeChange("analytics")}
+                className={`px-2 h-6 rounded-sm transition-colors ${viewMode === "analytics" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                Analytics
+              </button>
+            </div>
+          )}
+
           {renderFilterControls()}
 
           {/* Per-channel status chips inline with filters */}
@@ -2042,41 +2050,16 @@ export function CampaignCommunications({ campaignId, isCampaignEnded, isReadOnly
           )}
 
           <div className="flex items-center gap-2 ml-auto flex-shrink-0">
-            {viewMode && onViewModeChange && (
-              <div className="inline-flex h-7 items-center rounded-md border bg-muted/40 p-0.5 text-xs">
-                <button
-                  type="button"
-                  onClick={() => onViewModeChange("outreach")}
-                  className={`px-2 h-6 rounded-sm transition-colors ${viewMode === "outreach" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                >
-                  Outreach
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onViewModeChange("analytics")}
-                  className={`px-2 h-6 rounded-sm transition-colors ${viewMode === "analytics" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                >
-                  Analytics
-                </button>
-              </div>
-            )}
             <SyncStatusPill
               lastSyncedAt={lastSyncedAt}
-              isSyncing={isSyncing}
-              onRetry={() => syncReplies(true)}
+              isSyncing={isSyncing || isResyncing}
+              onRetry={() => {
+                const composite = selectedThreadKey || "";
+                const parts = composite.split("::");
+                const contactScope = parts.length === 2 && parts[1] && parts[1] !== "no-contact" ? parts[1] : undefined;
+                void runResync(contactScope);
+              }}
             />
-            {outreachTab === "email" && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground gap-1"
-                onClick={() => syncReplies(true)}
-                disabled={isSyncing}
-                title="Refresh email replies"
-              >
-                <RefreshCw className={`h-3 w-3 ${isSyncing ? "animate-spin" : ""}`} />
-              </Button>
-            )}
             {outreachTab === "email" && (
               <Button
                 variant="outline"
@@ -2092,7 +2075,7 @@ export function CampaignCommunications({ campaignId, isCampaignEnded, isReadOnly
                 disabled={isResyncing || isSyncing}
                 title={selectedThreadKey ? "Re-sync replies for the open thread's contact" : "Re-sync replies for the whole campaign"}
               >
-                <RefreshCw className={`h-3 w-3 ${isResyncing ? "animate-spin" : ""}`} />
+                <RefreshCw className={`h-3 w-3 ${isResyncing || isSyncing ? "animate-spin" : ""}`} />
                 Re-sync replies
               </Button>
             )}
