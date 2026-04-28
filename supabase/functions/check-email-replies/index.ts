@@ -398,6 +398,7 @@ Deno.serve(async (req) => {
     // re-scanning thousands of irrelevant inbox messages every 5-min cron.
     const mailboxSinceISO = new Map<string, string>();
     for (const email of trackableEmails) {
+      if (!email.communication_date) continue;
       const cur = mailboxSinceISO.get(email.sender_mailbox);
       if (!cur || email.communication_date < cur) {
         mailboxSinceISO.set(email.sender_mailbox, email.communication_date);
