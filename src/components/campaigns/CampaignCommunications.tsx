@@ -1951,7 +1951,19 @@ export function CampaignCommunications({ campaignId, isCampaignEnded, isReadOnly
             </div>
           )}
 
-          {renderFilterControls()}
+          {campaignSegments.length > 0 && (
+            <Select value={segmentFilter} onValueChange={setSegmentFilter}>
+              <SelectTrigger className="h-7 text-xs w-auto min-w-[140px] max-w-[200px] gap-1">
+                <SelectValue placeholder="Segment" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all" className="text-xs">All audience</SelectItem>
+                {campaignSegments.map((s: any) => (
+                  <SelectItem key={s.id} value={s.id} className="text-xs">{s.segment_name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
 
           {/* Per-channel status chips inline with filters */}
           {outreachTab === "email" && hasEmailStats && (() => {
@@ -2018,25 +2030,6 @@ export function CampaignCommunications({ campaignId, isCampaignEnded, isReadOnly
                 void runResync(contactScope);
               }}
             />
-            {outreachTab === "email" && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 px-2 text-xs gap-1"
-                onClick={() => {
-                  // Scope: if a thread is open, restrict to that thread's contact.
-                  const composite = selectedThreadKey || "";
-                  const parts = composite.split("::");
-                  const contactScope = parts.length === 2 && parts[1] && parts[1] !== "no-contact" ? parts[1] : undefined;
-                  void runResync(contactScope);
-                }}
-                disabled={isResyncing || isSyncing}
-                title={selectedThreadKey ? "Re-sync replies for the open thread's contact" : "Re-sync replies for the whole campaign"}
-              >
-                <RefreshCw className={`h-3 w-3 ${isResyncing || isSyncing ? "animate-spin" : ""}`} />
-                Re-sync replies
-              </Button>
-            )}
             {showSendEmail && (
               <TooltipProvider>
                 <Tooltip>
@@ -2106,22 +2099,12 @@ export function CampaignCommunications({ campaignId, isCampaignEnded, isReadOnly
             )}
           </div>
         </div>
+        <div className="flex items-center gap-2">
+          {renderFilterControls()}
+        </div>
 
         {/* EMAIL TAB — always threaded */}
         <TabsContent value="email" className="mt-2 space-y-2">
-          <div className="flex items-center gap-2 px-2 py-1.5 rounded-md border bg-muted/30 text-[11px] text-muted-foreground">
-            <Mail className="h-3 w-3 text-primary" />
-            <span>
-              Reaching <span className="font-semibold text-foreground tabular-nums">{reachableCounts.email}</span> of{" "}
-              <span className="tabular-nums">{campaignContacts.length}</span> campaign contacts via Email
-              {emailStats.bounced > 0 && (
-                <> · <span className="text-destructive font-medium tabular-nums">{emailStats.bounced} bounced</span></>
-              )}
-              {emailStats.replied > 0 && (
-                <> · <span className="text-emerald-600 dark:text-emerald-400 font-medium tabular-nums">{emailStats.replied} replied</span></>
-              )}
-            </span>
-          </div>
           {emailThreadsFiltered.length === 0 && hasAnyFilter ? (
             <div className="text-center py-8">
               <p className="text-sm text-muted-foreground">No emails match the current filters.</p>
