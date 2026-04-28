@@ -360,11 +360,6 @@ export async function sendEmailViaGraph(
         }
       } else {
         const errBody = await createResp.text();
-        if (createResp.status === 403) {
-          let errorCode = "ErrorAccessDenied";
-          try { errorCode = JSON.parse(errBody)?.error?.code || errorCode; } catch { /* ignore */ }
-          return { success: false, error: errBody, errorCode, sentAsUser: false };
-        }
         console.warn(`createReply failed (${createResp.status}); falling back to sendMail with headers. ${errBody}`);
       }
     } catch (e) {
