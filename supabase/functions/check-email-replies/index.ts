@@ -175,6 +175,20 @@ async function fetchInboxMessages(accessToken: string, mailbox: string, sinceISO
   return allMessages;
 }
 
+async function fetchMessageHeaders(accessToken: string, mailbox: string, messageId: string): Promise<any[]> {
+  try {
+    const resp = await fetch(
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(messageId)}?$select=internetMessageHeaders`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return Array.isArray(data.internetMessageHeaders) ? data.internetMessageHeaders : [];
+  } catch {
+    return [];
+  }
+}
+
 export function extractReplyBody(msg: any): string {
   const candidates = [
     { content: msg?.uniqueBody?.content, type: msg?.uniqueBody?.contentType },
@@ -412,9 +426,14 @@ Deno.serve(async (req) => {
         const inboxMessages = await fetchInboxMessages(accessToken, mailbox, sinceISO);
         console.log(`Got ${inboxMessages.length} inbox messages for ${mailbox}`);
 
-          const relevantMessages = inboxMessages.filter((msg: any) => {
+          const relevantMessages: any[] = [];
+          for (const msg of inboxMessages) {
             if (msg.conversationId && trackedConvIds.has(msg.conversationId)) return true;
-            const headerList: any[] = Array.isArray(msg.internetMessageHeaders) ? msg.internetMessageHeaders : [];
+            let headerList: any[] = Array.isArray(msg.internetMessageHeaders) ? msg.internetMessageHeaders : [];
+            if (headerList.length === 0 && msg.id) {
+              headerList = await fetchMessageHeaders(accessToken, mailbox, msg.id);
+              msg.internetMessageHeaders = headerList;
+            }
             const headerVal = (name: string): string => {
               const h = headerList.find((x: any) => (x?.name || "").toLowerCase() === name.toLowerCase());
               return (h?.value || "").trim();
@@ -423,8 +442,8 @@ Deno.serve(async (req) => {
               msg.inReplyTo || headerVal("In-Reply-To") || headerVal("x-In-Reply-To"),
               ...String(headerVal("References") || headerVal("x-References") || "").split(/\s+/),
             ].filter(Boolean);
-            return ids.some((id) => allInternetMsgIds.has(id));
-          });
+            if (ids.some((id) => allInternetMsgIds.has(id))) relevantMessages.push(msg);
+          }
         console.log(`${relevantMessages.length} messages match tracked conversations for ${mailbox}`);
         totalScanned += relevantMessages.length;
 
