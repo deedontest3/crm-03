@@ -220,12 +220,14 @@ Deno.serve(async (req) => {
     });
 
     const pdfBytes = await pdfDoc.save();
-    // Wrap in Blob so the response body satisfies BodyInit (Uint8Array alone fails Deno type-check).
-    return new Response(new Blob([pdfBytes], { type: "application/pdf" }), {
+    // Wrap in Blob to satisfy Deno BodyInit typing across runtime versions.
+    const pdfBlob = new Blob([pdfBytes as BlobPart], { type: "application/pdf" });
+    return new Response(pdfBlob, {
       status: 200,
       headers: {
         ...corsHeaders,
         "Content-Type": "application/pdf",
+        "Content-Length": String(pdfBytes.byteLength),
         "Content-Disposition": `attachment; filename="email-skip-report-${fromIso.slice(0, 10)}-to-${toIso.slice(0, 10)}.pdf"`,
       },
     });
