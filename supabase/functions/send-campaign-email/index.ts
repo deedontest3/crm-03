@@ -729,7 +729,7 @@ Deno.serve(async (req) => {
         errorCode: result.errorCode || undefined,
       }),
       {
-        status: result.success ? 200 : 200,
+        status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       }
     );
