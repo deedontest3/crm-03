@@ -604,7 +604,15 @@ Deno.serve(async (req) => {
     );
 
     let sentAsShared = false;
-    if (!result.success && result.errorCode === "ErrorAccessDenied" && senderEmail.toLowerCase() !== mailboxEmail.toLowerCase()) {
+    // Fall back to the configured shared mailbox whenever Graph denies the
+    // per-user send (common when the app registration lacks Mail.Send for
+    // that specific user mailbox but does have access to the shared mailbox).
+    if (
+      !result.success &&
+      result.errorCode === "ErrorAccessDenied" &&
+      mailboxEmail &&
+      senderEmail.toLowerCase() !== mailboxEmail.toLowerCase()
+    ) {
       console.warn(`User mailbox send denied for ${senderEmail}; retrying via shared mailbox ${mailboxEmail}`);
       result = await sendEmailViaGraph(
         accessToken,
