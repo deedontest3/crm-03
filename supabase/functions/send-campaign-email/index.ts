@@ -631,6 +631,9 @@ Deno.serve(async (req) => {
       sentAsShared = result.success;
     }
 
+    const attemptedSharedMailbox = senderEmail.toLowerCase() !== mailboxEmail.toLowerCase() && (
+      sentAsShared || (!result.success && result.errorCode === "ErrorAccessDenied")
+    );
     const deliveryStatus = result.success ? "sent" : "failed";
     const messageId = result.internetMessageId || crypto.randomUUID();
     const threadId = payload.thread_id || payload.parent_id || null;
@@ -639,7 +642,10 @@ Deno.serve(async (req) => {
     // C8: when the user-mailbox send was denied and we fell back to the shared mailbox,
     // the recipient actually received the message from `mailboxEmail`, not `senderEmail`.
     // Surface the true sender so the UI toast / result panel can show "Sent as <shared>".
-    const actualSender = sentAsShared ? mailboxEmail : senderEmail;
+    const actualSender = attemptedSharedMailbox ? mailboxEmail : senderEmail;
+    const userFacingError = !result.success && result.errorCode === "ErrorAccessDenied"
+      ? `Microsoft 365 denied mailbox send access for ${actualSender}. Ask your admin to grant Mail.Send application permission and mailbox access for this sender.`
+      : result.error;
 
     const { data: commRecord, error: commError } = await supabaseClient
       .from("campaign_communications")
@@ -667,11 +673,11 @@ Deno.serve(async (req) => {
         send_request_id: sendRequestId,
         sent_as_shared: sentAsShared,
         error_code: result.errorCode || null,
-        error_message: result.error ? result.error.substring(0, 1000) : null,
+        error_message: userFacingError ? userFacingError.substring(0, 1000) : null,
         last_attempt_at: new Date().toISOString(),
         owner: user.id,
         created_by: user.id,
-        notes: result.error ? `Send error: ${result.error.substring(0, 500)}` : null,
+        notes: userFacingError ? `Send error: ${userFacingError.substring(0, 500)}` : null,
         communication_date: new Date().toISOString(),
       })
       .select("id")
@@ -719,11 +725,11 @@ Deno.serve(async (req) => {
         conversation_id: conversationId,
         sent_as: actualSender,
         sent_as_shared: sentAsShared,
-        error: result.error || undefined,
+        error: userFacingError || undefined,
         errorCode: result.errorCode || undefined,
       }),
       {
-        status: result.success ? 200 : 500,
+        status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       }
     );
