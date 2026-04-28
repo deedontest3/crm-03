@@ -426,9 +426,12 @@ Deno.serve(async (req) => {
         const inboxMessages = await fetchInboxMessages(accessToken, mailbox, sinceISO);
         console.log(`Got ${inboxMessages.length} inbox messages for ${mailbox}`);
 
-          const relevantMessages: any[] = [];
-          for (const msg of inboxMessages) {
-            if (msg.conversationId && trackedConvIds.has(msg.conversationId)) return true;
+        const relevantMessages: any[] = [];
+        for (const msg of inboxMessages) {
+          if (msg.conversationId && trackedConvIds.has(msg.conversationId)) {
+            relevantMessages.push(msg);
+            continue;
+          }
             let headerList: any[] = Array.isArray(msg.internetMessageHeaders) ? msg.internetMessageHeaders : [];
             if (headerList.length === 0 && msg.id) {
               headerList = await fetchMessageHeaders(accessToken, mailbox, msg.id);
@@ -443,7 +446,7 @@ Deno.serve(async (req) => {
               ...String(headerVal("References") || headerVal("x-References") || "").split(/\s+/),
             ].filter(Boolean);
             if (ids.some((id) => allInternetMsgIds.has(id))) relevantMessages.push(msg);
-          }
+        }
         console.log(`${relevantMessages.length} messages match tracked conversations for ${mailbox}`);
         totalScanned += relevantMessages.length;
 
