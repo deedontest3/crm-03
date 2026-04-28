@@ -1330,23 +1330,10 @@ export function CampaignCommunications({ campaignId, isCampaignEnded, isReadOnly
 
   const renderFilterControls = () => (
     <>
-      <div className="relative flex-1 min-w-[140px] max-w-[220px]">
+      <div className="relative w-full max-w-[320px]">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
         <Input placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-7 h-7 text-xs" />
       </div>
-      {campaignSegments.length > 0 && (
-        <Select value={segmentFilter} onValueChange={setSegmentFilter}>
-          <SelectTrigger className="h-7 text-xs w-auto min-w-[140px] max-w-[200px] gap-1">
-            <SelectValue placeholder="Segment" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all" className="text-xs">All audience</SelectItem>
-            {campaignSegments.map((s: any) => (
-              <SelectItem key={s.id} value={s.id} className="text-xs">{s.segment_name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      )}
     </>
   );
 
