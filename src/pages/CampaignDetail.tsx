@@ -450,18 +450,18 @@ export default function CampaignDetail() {
                 </Suspense>
               ) : (
                 <div className="space-y-2">
-                  <div className="flex justify-end">
+                  <div className="flex justify-start">
                     <ToggleGroup
                       type="single"
                       size="sm"
                       value={monitoringView}
                       onValueChange={(v) => v && setMonitoringView(v as "outreach" | "analytics")}
-                      className="h-8 rounded-md border bg-muted/40 p-0.5"
+                      className="h-7 rounded-md border bg-muted/40 p-0.5"
                     >
-                      <ToggleGroupItem value="outreach" className="h-7 px-3 text-xs data-[state=on]:bg-background data-[state=on]:shadow-sm">
+                      <ToggleGroupItem value="outreach" className="h-6 px-2 text-xs data-[state=on]:bg-background data-[state=on]:shadow-sm">
                         Outreach
                       </ToggleGroupItem>
-                      <ToggleGroupItem value="analytics" className="h-7 px-3 text-xs data-[state=on]:bg-background data-[state=on]:shadow-sm">
+                      <ToggleGroupItem value="analytics" className="h-6 px-2 text-xs data-[state=on]:bg-background data-[state=on]:shadow-sm">
                         Analytics
                       </ToggleGroupItem>
                     </ToggleGroup>
