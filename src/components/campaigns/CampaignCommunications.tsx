@@ -1909,26 +1909,28 @@ export function CampaignCommunications({ campaignId, isCampaignEnded, isReadOnly
             LEFT:  [Channel tabs] [Search] [Contact] [Account] [Owner] [Status chips]
             RIGHT: [Clear] [View switch] [Synced · refresh] [Primary Action] [Ended] */}
         <div className="flex flex-wrap items-center gap-2">
-          <TabsList className="h-7">
-            {enableEmail && (
-              <TabsTrigger value="email" className="text-xs h-6 px-2.5 gap-1.5">
-                <Mail className="h-3 w-3" /> Email
-                <span className="tabular-nums text-muted-foreground">{reachableCounts.email}/{campaignContacts.length}</span>
-              </TabsTrigger>
-            )}
-            {enableLinkedIn && (
-              <TabsTrigger value="linkedin" className="text-xs h-6 px-2.5 gap-1.5">
-                <Linkedin className="h-3 w-3" /> LinkedIn
-                <span className="tabular-nums text-muted-foreground">{reachableCounts.linkedin}/{campaignContacts.length}</span>
-              </TabsTrigger>
-            )}
-            {enablePhone && (
-              <TabsTrigger value="call" className="text-xs h-6 px-2.5 gap-1.5">
-                <Phone className="h-3 w-3" /> Phone
-                <span className="tabular-nums text-muted-foreground">{reachableCounts.phone}/{campaignContacts.length}</span>
-              </TabsTrigger>
-            )}
-          </TabsList>
+          {(Number(!!enableEmail) + Number(!!enableLinkedIn) + Number(!!enablePhone)) > 1 && (
+            <TabsList className="h-7">
+              {enableEmail && (
+                <TabsTrigger value="email" className="text-xs h-6 px-2.5 gap-1.5">
+                  <Mail className="h-3 w-3" /> Email
+                  <span className="tabular-nums text-muted-foreground">{reachableCounts.email}/{campaignContacts.length}</span>
+                </TabsTrigger>
+              )}
+              {enableLinkedIn && (
+                <TabsTrigger value="linkedin" className="text-xs h-6 px-2.5 gap-1.5">
+                  <Linkedin className="h-3 w-3" /> LinkedIn
+                  <span className="tabular-nums text-muted-foreground">{reachableCounts.linkedin}/{campaignContacts.length}</span>
+                </TabsTrigger>
+              )}
+              {enablePhone && (
+                <TabsTrigger value="call" className="text-xs h-6 px-2.5 gap-1.5">
+                  <Phone className="h-3 w-3" /> Phone
+                  <span className="tabular-nums text-muted-foreground">{reachableCounts.phone}/{campaignContacts.length}</span>
+                </TabsTrigger>
+              )}
+            </TabsList>
+          )}
 
           {viewMode && onViewModeChange && (
             <div className="inline-flex h-7 items-center rounded-md border bg-muted/40 p-0.5 text-xs">
