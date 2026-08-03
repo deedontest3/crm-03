@@ -219,8 +219,12 @@ const DealsPage = () => {
 
       if (error) {
         console.error("Archive error:", error, JSON.stringify(error));
+        const isPermission =
+          error.code === '42501' ||
+          error.code === 'PGRST301' ||
+          /row-level security|permission|not authenticated/i.test(error.message || '');
         toast({
-          title: "Error",
+          title: isPermission ? "Permission Denied" : "Couldn't archive deals",
           description: error.message || "Failed to archive deals",
           variant: "destructive",
         });
