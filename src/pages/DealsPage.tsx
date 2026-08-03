@@ -246,7 +246,7 @@ const DealsPage = () => {
 
         toast({
           title: "Moved to Archive",
-          description: `${archivedIds.length} deal(s) archived. A super admin can restore or permanently delete them.`,
+          description: `${archivedIds.length} deal(s) Delated.`,
         });
       }
 
