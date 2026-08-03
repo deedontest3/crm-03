@@ -4,9 +4,7 @@ import { findSentMessageGraphId, getAzureEmailConfig, getGraphAccessToken, sendE
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Max-Age': '86400',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
 interface AttachmentInput {
@@ -606,15 +604,7 @@ Deno.serve(async (req) => {
     );
 
     let sentAsShared = false;
-    // Fall back to the configured shared mailbox whenever Graph denies the
-    // per-user send (common when the app registration lacks Mail.Send for
-    // that specific user mailbox but does have access to the shared mailbox).
-    if (
-      !result.success &&
-      result.errorCode === "ErrorAccessDenied" &&
-      mailboxEmail &&
-      senderEmail.toLowerCase() !== mailboxEmail.toLowerCase()
-    ) {
+    if (!result.success && result.errorCode === "ErrorAccessDenied" && senderEmail.toLowerCase() !== mailboxEmail.toLowerCase()) {
       console.warn(`User mailbox send denied for ${senderEmail}; retrying via shared mailbox ${mailboxEmail}`);
       result = await sendEmailViaGraph(
         accessToken,
@@ -633,9 +623,6 @@ Deno.serve(async (req) => {
       sentAsShared = result.success;
     }
 
-    const attemptedSharedMailbox = senderEmail.toLowerCase() !== mailboxEmail.toLowerCase() && (
-      sentAsShared || (!result.success && result.errorCode === "ErrorAccessDenied")
-    );
     const deliveryStatus = result.success ? "sent" : "failed";
     const messageId = result.internetMessageId || crypto.randomUUID();
     const threadId = payload.thread_id || payload.parent_id || null;
@@ -644,10 +631,7 @@ Deno.serve(async (req) => {
     // C8: when the user-mailbox send was denied and we fell back to the shared mailbox,
     // the recipient actually received the message from `mailboxEmail`, not `senderEmail`.
     // Surface the true sender so the UI toast / result panel can show "Sent as <shared>".
-    const actualSender = attemptedSharedMailbox ? mailboxEmail : senderEmail;
-    const userFacingError = !result.success && result.errorCode === "ErrorAccessDenied"
-      ? `Microsoft 365 denied mailbox send access for ${actualSender}. Ask your admin to grant Mail.Send application permission and mailbox access for this sender.`
-      : result.error;
+    const actualSender = sentAsShared ? mailboxEmail : senderEmail;
 
     const { data: commRecord, error: commError } = await supabaseClient
       .from("campaign_communications")
@@ -675,11 +659,11 @@ Deno.serve(async (req) => {
         send_request_id: sendRequestId,
         sent_as_shared: sentAsShared,
         error_code: result.errorCode || null,
-        error_message: userFacingError ? userFacingError.substring(0, 1000) : null,
+        error_message: result.error ? result.error.substring(0, 1000) : null,
         last_attempt_at: new Date().toISOString(),
         owner: user.id,
         created_by: user.id,
-        notes: userFacingError ? `Send error: ${userFacingError.substring(0, 500)}` : null,
+        notes: result.error ? `Send error: ${result.error.substring(0, 500)}` : null,
         communication_date: new Date().toISOString(),
       })
       .select("id")
@@ -727,11 +711,11 @@ Deno.serve(async (req) => {
         conversation_id: conversationId,
         sent_as: actualSender,
         sent_as_shared: sentAsShared,
-        error: userFacingError || undefined,
+        error: result.error || undefined,
         errorCode: result.errorCode || undefined,
       }),
       {
-        status: 200,
+        status: result.success ? 200 : 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       }
     );

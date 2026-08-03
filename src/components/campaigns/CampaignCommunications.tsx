@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Plus, Search, MessageSquare, AlertTriangle, ChevronDown, ChevronRight, Phone, ArrowUpDown, Send, Mail, ListChecks, Reply, Linkedin, Info, RefreshCw } from "lucide-react";
+import { Plus, Search, MessageSquare, AlertTriangle, ChevronDown, ChevronRight, Phone, ArrowUpDown, Send, Mail, ListChecks, Reply, Linkedin, Info, RefreshCw, Download } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -1327,13 +1327,81 @@ export function CampaignCommunications({ campaignId, isCampaignEnded, isReadOnly
   ];
 
   // --- Inline filter controls (rendered inside the unified toolbar) ---
+  // E6: export the currently filtered comms to CSV.
+  const exportCurrentToCsv = () => {
+    const rows: any[] = outreachTab === "email" ? emailFiltered
+      : outreachTab === "linkedin" ? linkedinFiltered
+      : outreachTab === "call" ? callFiltered
+      : communications;
+    if (!rows || rows.length === 0) {
+      toast({ title: "Nothing to export", description: "There are no rows in the current view." });
+      return;
+    }
+    const headers = [
+      "date","channel","contact_name","contact_email","account_name","subject",
+      "email_status","email_type","call_outcome","linkedin_status","sent_via","owner",
+    ];
+    const esc = (v: any) => {
+      const s = v == null ? "" : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [headers.join(",")];
+    for (const r of rows) {
+      lines.push([
+        r.communication_date || r.created_at || "",
+        r.communication_type || "",
+        r.contacts?.contact_name || "",
+        r.contacts?.email || r.recipient_email || "",
+        r.accounts?.account_name || "",
+        r.subject || "",
+        r.email_status || "",
+        r.email_type || "",
+        r.call_outcome || "",
+        r.linkedin_status || "",
+        r.sent_via || "",
+        r.owner || "",
+      ].map(esc).join(","));
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `campaign-${outreachTab}-comms-${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    toast({ title: "Export ready", description: `${rows.length} row${rows.length === 1 ? "" : "s"} exported.` });
+  };
 
   const renderFilterControls = () => (
     <>
-      <div className="relative w-full max-w-[320px]">
+      <div className="relative flex-1 min-w-[140px] max-w-[220px]">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
         <Input placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-7 h-7 text-xs" />
       </div>
+      {campaignSegments.length > 0 && (
+        <Select value={segmentFilter} onValueChange={setSegmentFilter}>
+          <SelectTrigger className="h-7 text-xs w-auto min-w-[140px] max-w-[200px] gap-1">
+            <SelectValue placeholder="Segment" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all" className="text-xs">All audience</SelectItem>
+            {campaignSegments.map((s: any) => (
+              <SelectItem key={s.id} value={s.id} className="text-xs">{s.segment_name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="h-7 px-2 text-xs gap-1"
+        onClick={exportCurrentToCsv}
+        title="Export the current view to CSV"
+      >
+        <Download className="h-3 w-3" />
+        Export
+      </Button>
     </>
   );
 
@@ -1896,61 +1964,28 @@ export function CampaignCommunications({ campaignId, isCampaignEnded, isReadOnly
             LEFT:  [Channel tabs] [Search] [Contact] [Account] [Owner] [Status chips]
             RIGHT: [Clear] [View switch] [Synced · refresh] [Primary Action] [Ended] */}
         <div className="flex flex-wrap items-center gap-2">
-          {(Number(!!enableEmail) + Number(!!enableLinkedIn) + Number(!!enablePhone)) > 1 && (
-            <TabsList className="h-7">
-              {enableEmail && (
-                <TabsTrigger value="email" className="text-xs h-6 px-2.5 gap-1.5">
-                  <Mail className="h-3 w-3" /> Email
-                  <span className="tabular-nums text-muted-foreground">{reachableCounts.email}/{campaignContacts.length}</span>
-                </TabsTrigger>
-              )}
-              {enableLinkedIn && (
-                <TabsTrigger value="linkedin" className="text-xs h-6 px-2.5 gap-1.5">
-                  <Linkedin className="h-3 w-3" /> LinkedIn
-                  <span className="tabular-nums text-muted-foreground">{reachableCounts.linkedin}/{campaignContacts.length}</span>
-                </TabsTrigger>
-              )}
-              {enablePhone && (
-                <TabsTrigger value="call" className="text-xs h-6 px-2.5 gap-1.5">
-                  <Phone className="h-3 w-3" /> Phone
-                  <span className="tabular-nums text-muted-foreground">{reachableCounts.phone}/{campaignContacts.length}</span>
-                </TabsTrigger>
-              )}
-            </TabsList>
-          )}
+          <TabsList className="h-7">
+            {enableEmail && (
+              <TabsTrigger value="email" className="text-xs h-6 px-2.5 gap-1.5">
+                <Mail className="h-3 w-3" /> Email
+                <span className="tabular-nums text-muted-foreground">{reachableCounts.email}/{campaignContacts.length}</span>
+              </TabsTrigger>
+            )}
+            {enableLinkedIn && (
+              <TabsTrigger value="linkedin" className="text-xs h-6 px-2.5 gap-1.5">
+                <Linkedin className="h-3 w-3" /> LinkedIn
+                <span className="tabular-nums text-muted-foreground">{reachableCounts.linkedin}/{campaignContacts.length}</span>
+              </TabsTrigger>
+            )}
+            {enablePhone && (
+              <TabsTrigger value="call" className="text-xs h-6 px-2.5 gap-1.5">
+                <Phone className="h-3 w-3" /> Phone
+                <span className="tabular-nums text-muted-foreground">{reachableCounts.phone}/{campaignContacts.length}</span>
+              </TabsTrigger>
+            )}
+          </TabsList>
 
-          {viewMode && onViewModeChange && (
-            <div className="inline-flex h-7 items-center rounded-md border bg-muted/40 p-0.5 text-xs">
-              <button
-                type="button"
-                onClick={() => onViewModeChange("outreach")}
-                className={`px-2 h-6 rounded-sm transition-colors ${viewMode === "outreach" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-              >
-                Outreach
-              </button>
-              <button
-                type="button"
-                onClick={() => onViewModeChange("analytics")}
-                className={`px-2 h-6 rounded-sm transition-colors ${viewMode === "analytics" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-              >
-                Analytics
-              </button>
-            </div>
-          )}
-
-          {campaignSegments.length > 0 && (
-            <Select value={segmentFilter} onValueChange={setSegmentFilter}>
-              <SelectTrigger className="h-7 text-xs w-auto min-w-[140px] max-w-[200px] gap-1">
-                <SelectValue placeholder="Segment" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all" className="text-xs">All audience</SelectItem>
-                {campaignSegments.map((s: any) => (
-                  <SelectItem key={s.id} value={s.id} className="text-xs">{s.segment_name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
+          {renderFilterControls()}
 
           {/* Per-channel status chips inline with filters */}
           {outreachTab === "email" && hasEmailStats && (() => {
@@ -2007,16 +2042,60 @@ export function CampaignCommunications({ campaignId, isCampaignEnded, isReadOnly
           )}
 
           <div className="flex items-center gap-2 ml-auto flex-shrink-0">
+            {viewMode && onViewModeChange && (
+              <div className="inline-flex h-7 items-center rounded-md border bg-muted/40 p-0.5 text-xs">
+                <button
+                  type="button"
+                  onClick={() => onViewModeChange("outreach")}
+                  className={`px-2 h-6 rounded-sm transition-colors ${viewMode === "outreach" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                >
+                  Outreach
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onViewModeChange("analytics")}
+                  className={`px-2 h-6 rounded-sm transition-colors ${viewMode === "analytics" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                >
+                  Analytics
+                </button>
+              </div>
+            )}
             <SyncStatusPill
               lastSyncedAt={lastSyncedAt}
-              isSyncing={isSyncing || isResyncing}
-              onRetry={() => {
-                const composite = selectedThreadKey || "";
-                const parts = composite.split("::");
-                const contactScope = parts.length === 2 && parts[1] && parts[1] !== "no-contact" ? parts[1] : undefined;
-                void runResync(contactScope);
-              }}
+              isSyncing={isSyncing}
+              onRetry={() => syncReplies(true)}
             />
+            {outreachTab === "email" && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground gap-1"
+                onClick={() => syncReplies(true)}
+                disabled={isSyncing}
+                title="Refresh email replies"
+              >
+                <RefreshCw className={`h-3 w-3 ${isSyncing ? "animate-spin" : ""}`} />
+              </Button>
+            )}
+            {outreachTab === "email" && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-xs gap-1"
+                onClick={() => {
+                  // Scope: if a thread is open, restrict to that thread's contact.
+                  const composite = selectedThreadKey || "";
+                  const parts = composite.split("::");
+                  const contactScope = parts.length === 2 && parts[1] && parts[1] !== "no-contact" ? parts[1] : undefined;
+                  void runResync(contactScope);
+                }}
+                disabled={isResyncing || isSyncing}
+                title={selectedThreadKey ? "Re-sync replies for the open thread's contact" : "Re-sync replies for the whole campaign"}
+              >
+                <RefreshCw className={`h-3 w-3 ${isResyncing ? "animate-spin" : ""}`} />
+                Re-sync replies
+              </Button>
+            )}
             {showSendEmail && (
               <TooltipProvider>
                 <Tooltip>
@@ -2086,12 +2165,22 @@ export function CampaignCommunications({ campaignId, isCampaignEnded, isReadOnly
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {renderFilterControls()}
-        </div>
 
         {/* EMAIL TAB — always threaded */}
         <TabsContent value="email" className="mt-2 space-y-2">
+          <div className="flex items-center gap-2 px-2 py-1.5 rounded-md border bg-muted/30 text-[11px] text-muted-foreground">
+            <Mail className="h-3 w-3 text-primary" />
+            <span>
+              Reaching <span className="font-semibold text-foreground tabular-nums">{reachableCounts.email}</span> of{" "}
+              <span className="tabular-nums">{campaignContacts.length}</span> campaign contacts via Email
+              {emailStats.bounced > 0 && (
+                <> · <span className="text-destructive font-medium tabular-nums">{emailStats.bounced} bounced</span></>
+              )}
+              {emailStats.replied > 0 && (
+                <> · <span className="text-emerald-600 dark:text-emerald-400 font-medium tabular-nums">{emailStats.replied} replied</span></>
+              )}
+            </span>
+          </div>
           {emailThreadsFiltered.length === 0 && hasAnyFilter ? (
             <div className="text-center py-8">
               <p className="text-sm text-muted-foreground">No emails match the current filters.</p>
