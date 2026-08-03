@@ -245,7 +245,7 @@ const DealsPage = () => {
         }
 
         toast({
-          title: "Moved to Archive",
+          title: "Delated",
           description: `${archivedIds.length} deal(s) Delated.`,
         });
       }

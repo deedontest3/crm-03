@@ -158,7 +158,7 @@ const Index = () => {
         setDeals(prev => prev.filter(deal => !archivedIds.includes(deal.id)));
         invalidateDealCaches(queryClient);
         toast({
-          title: "Moved to Archive",
+          title: "Delated",
           description: `${archivedIds.length} deal(s) archived`,
         });
       }
