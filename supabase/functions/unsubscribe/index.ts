@@ -86,16 +86,29 @@ function timingSafeEqual(a: string, b: string): boolean {
   return mismatch === 0;
 }
 
-const CONFIRM_PAGE = (token: string, email: string, campaignId: string | null, alreadyDone: boolean) => `
+function escapeHtml(s: string): string {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+const CONFIRM_PAGE = (token: string, email: string, campaignId: string | null, alreadyDone: boolean) => {
+  const safeEmail = escapeHtml(email);
+  const safeToken = escapeHtml(token);
+  const safeCampaign = campaignId ? escapeHtml(campaignId) : null;
+  return `
   <h1>${alreadyDone ? "You're already unsubscribed" : "Confirm unsubscribe"}</h1>
   <p>${alreadyDone
-    ? `<strong>${email}</strong> is on our suppression list. You will not receive further marketing emails.`
-    : `Click the button below to stop receiving marketing emails sent to <strong>${email}</strong>.`}
+    ? `<strong>${safeEmail}</strong> is on our suppression list. You will not receive further marketing emails.`
+    : `Click the button below to stop receiving marketing emails sent to <strong>${safeEmail}</strong>.`}
   </p>
   ${alreadyDone ? "" : `
     <form method="POST" action="?confirm=1" style="margin-top:24px;">
-      <input type="hidden" name="t" value="${token}">
-      ${campaignId ? `<input type="hidden" name="c" value="${campaignId}">` : ""}
+      <input type="hidden" name="t" value="${safeToken}">
+      ${safeCampaign ? `<input type="hidden" name="c" value="${safeCampaign}">` : ""}
       <button type="submit" style="background:#dc2626;color:white;border:0;padding:10px 16px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;">
         Yes, unsubscribe me
       </button>
@@ -103,12 +116,16 @@ const CONFIRM_PAGE = (token: string, email: string, campaignId: string | null, a
     <p style="margin-top:24px;font-size:13px;color:#94a3b8;">If you didn't request this, you can safely close this page.</p>
   `}
 `;
+};
 
-const SUCCESS_PAGE = (email: string) => `
+const SUCCESS_PAGE = (email: string) => {
+  const safeEmail = escapeHtml(email);
+  return `
   <h1 class="ok">You've been unsubscribed</h1>
-  <p><strong>${email}</strong> has been added to our suppression list.</p>
+  <p><strong>${safeEmail}</strong> has been added to our suppression list.</p>
   <p>It may take a few minutes for in-flight messages to stop.</p>
 `;
+};
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });

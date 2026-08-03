@@ -833,14 +833,14 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
 
       {/* Email Template Modal */}
       <Dialog open={emailModalOpen} onOpenChange={setEmailModalOpen}>
-        <DialogContent className={emailPreviewOpen ? "sm:max-w-[960px] max-h-[90vh] overflow-hidden p-0" : "sm:max-w-[600px] max-h-[90vh] overflow-hidden p-0"}>
-          <DialogHeader className="px-5 pt-4 pb-3 border-b flex-row items-center justify-between gap-3 space-y-0">
-            <DialogTitle className="text-base">{editEmailId ? "Edit" : "Add"} Email Template</DialogTitle>
+         <DialogContent className={emailPreviewOpen ? "sm:max-w-[900px] max-h-[88vh] overflow-hidden p-0" : "sm:max-w-[560px] max-h-[88vh] overflow-hidden p-0"}>
+          <DialogHeader className="px-3 py-2 border-b flex-row items-center justify-between gap-2 space-y-0">
+            <DialogTitle className="text-sm font-medium">{editEmailId ? "Edit" : "Add"} Email Template</DialogTitle>
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               size="sm"
-              className="h-8 mr-6 gap-1.5 text-xs shrink-0"
+              className="h-7 mr-6 gap-1 text-xs shrink-0 px-2"
               onClick={() => setEmailPreviewOpen((v) => !v)}
               title={emailPreviewOpen ? "Hide email preview" : "Show email preview"}
             >
@@ -848,23 +848,23 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
               {emailPreviewOpen ? "Hide preview" : "Preview"}
             </Button>
           </DialogHeader>
-          <div className={emailPreviewOpen ? "grid md:grid-cols-2 gap-0 max-h-[calc(90vh-110px)]" : "max-h-[calc(90vh-110px)]"}>
+          <div className={emailPreviewOpen ? "grid md:grid-cols-2 gap-0 max-h-[calc(88vh-92px)]" : "max-h-[calc(88vh-92px)]"}>
             {/* Editor */}
-            <div className="p-5 space-y-4 overflow-y-auto">
-              <div className="space-y-1.5">
+            <div className="p-3 space-y-2.5 overflow-y-auto">
+              <div className="space-y-1">
                 <Label className="text-xs">Template name *</Label>
-                <Input className="h-9" value={emailForm.template_name} onChange={(e) => setEmailForm({ ...emailForm, template_name: e.target.value })} placeholder="Initial outreach for automotive prospects" />
+                <Input className="h-8" value={emailForm.template_name} onChange={(e) => setEmailForm({ ...emailForm, template_name: e.target.value })} placeholder="Initial outreach for automotive prospects" />
               </div>
-              <div className="grid gap-3 sm:grid-cols-[1fr_140px]">
-                <div className="space-y-1.5">
+              <div className="grid gap-2 sm:grid-cols-[1fr_120px]">
+                <div className="space-y-1 relative">
                   <Label className="text-xs">Subject *</Label>
-                  <Input className="h-9" value={emailForm.subject} onChange={(e) => setEmailForm({ ...emailForm, subject: e.target.value })} placeholder="Boosting results at {company_name}" />
-                  <p className="text-[10px] text-muted-foreground text-right">{emailForm.subject.length}/60</p>
+                  <Input className="h-8 pr-12" value={emailForm.subject} onChange={(e) => setEmailForm({ ...emailForm, subject: e.target.value })} placeholder="Boosting results at {company_name}" />
+                  <span className="absolute right-2 top-[26px] text-[10px] text-muted-foreground pointer-events-none">{emailForm.subject.length}/60</span>
                 </div>
-                <div className="space-y-1.5">
+                <div className="space-y-1">
                   <Label className="text-xs">Type</Label>
                   <Select value={emailForm.email_type} onValueChange={(v) => setEmailForm({ ...emailForm, email_type: v })}>
-                    <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="Initial">Initial</SelectItem>
                       <SelectItem value="Follow-up">Follow-up</SelectItem>
@@ -873,30 +873,31 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
                   </Select>
                 </div>
               </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Body *</Label>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs">Body *</Label>
+                  <span className="text-[10px] text-muted-foreground">{countWordsFromHtml(emailForm.body)} words</span>
+                </div>
                 <RichEmailBodyEditor
                   value={emailForm.body}
                   onChange={(body) => setEmailForm({ ...emailForm, body })}
                 />
-                <p className="text-[10px] text-muted-foreground text-right">{countWordsFromHtml(emailForm.body)} words</p>
               </div>
             </div>
 
             {/* Preview */}
             {emailPreviewOpen && (
               <div className="border-l bg-muted/30 overflow-y-auto">
-                <div className="p-5 space-y-3">
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Email preview</div>
-                  <div className="rounded-md border bg-background shadow-sm">
-                    <div className="px-4 py-3 border-b">
+                <div className="p-3 space-y-2">
+                  <div className="rounded-md border bg-background">
+                    <div className="px-3 py-2 border-b">
                       <div className="text-[10px] uppercase text-muted-foreground">Subject</div>
                       <div className="text-sm font-medium break-words">{emailForm.subject || <span className="text-muted-foreground italic">No subject</span>}</div>
                     </div>
                     {emailForm.body ? (
-                      <div className="email-preview-body px-4 py-3 text-sm leading-6 break-words min-h-[180px] max-w-none" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(emailForm.body) }} />
+                      <div className="email-preview-body px-3 py-2 text-sm leading-6 break-words min-h-[180px] max-w-none" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(emailForm.body) }} />
                     ) : (
-                      <div className="px-4 py-3 text-sm text-muted-foreground italic min-h-[180px]">Body preview will appear here…</div>
+                      <div className="px-3 py-2 text-sm text-muted-foreground italic min-h-[180px]">Body preview will appear here…</div>
                     )}
                   </div>
                   <p className="text-[10px] text-muted-foreground">Placeholders like {"{first_name}"} are replaced per recipient at send time.</p>
@@ -904,9 +905,9 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
               </div>
             )}
           </div>
-          <DialogFooter className="px-5 py-3 border-t">
-            <Button variant="outline" onClick={() => setEmailModalOpen(false)}>Cancel</Button>
-            <Button onClick={saveEmailTemplate} disabled={!emailForm.template_name.trim() || !emailForm.subject.trim() || !emailForm.body.trim()}>Save</Button>
+          <DialogFooter className="px-3 py-2 border-t">
+            <Button variant="outline" size="sm" onClick={() => setEmailModalOpen(false)}>Cancel</Button>
+            <Button size="sm" onClick={saveEmailTemplate} disabled={!emailForm.template_name.trim() || !emailForm.subject.trim() || !emailForm.body.trim()}>Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

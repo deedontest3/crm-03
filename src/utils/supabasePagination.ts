@@ -15,6 +15,11 @@ interface PaginationOptions {
   searchTerm?: string;
   searchFields?: string[];
   filters?: Record<string, string>;
+  /**
+   * When provided, restrict results to rows whose `id` is in this list.
+   * An empty array returns no rows (used by the "In Deals" filter).
+   */
+  idIn?: string[];
 }
 
 /**
@@ -34,6 +39,7 @@ export async function fetchPaginatedData<T = any>(
     searchTerm,
     searchFields = [],
     filters = {},
+    idIn,
   } = options;
 
   const from = (page - 1) * pageSize;
@@ -44,11 +50,23 @@ export async function fetchPaginatedData<T = any>(
     .select('*', { count: 'exact' });
 
   // Server-side search across multiple columns
-  if (searchTerm && searchFields.length > 0) {
+  const trimmedSearch = searchTerm?.trim();
+  if (trimmedSearch && searchFields.length > 0) {
+    // Escape PostgREST `or()` reserved chars by wrapping the pattern in double
+    // quotes; backslashes and quotes inside the value must themselves be escaped.
+    const escaped = trimmedSearch.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const safe = `"%${escaped}%"`;
     const orClauses = searchFields
-      .map(field => `${field}.ilike.%${searchTerm}%`)
+      .map(field => `${field}.ilike.${safe}`)
       .join(',');
     query = query.or(orClauses);
+  }
+
+
+  // Restrict to a specific set of ids (e.g. records linked to deals)
+  if (idIn) {
+    // Empty set must match nothing; use a non-existent uuid sentinel.
+    query = query.in('id', idIn.length > 0 ? idIn : ['00000000-0000-0000-0000-000000000000']);
   }
 
   // Server-side equality filters
@@ -59,13 +77,17 @@ export async function fetchPaginatedData<T = any>(
   }
 
   // Server-side sorting
+  // Server-side sorting. Always add `id` as a secondary key so rows with an
+  // identical primary sort value (common right after a bulk import) have a
+  // stable order across page boundaries — otherwise a full paginated export
+  // can skip or duplicate rows.
   if (sortField) {
     query = query.order(sortField, { ascending: sortDirection === 'asc' });
   } else {
-    // Default sort by created_time/created_at descending
     const defaultSort = tableName === 'deals' ? 'modified_at' : 'created_time';
     query = query.order(defaultSort, { ascending: false });
   }
+  query = query.order('id', { ascending: true });
 
   // Pagination range
   query = query.range(from, to);
@@ -99,6 +121,8 @@ export async function fetchAllRecords<T = any>(
       .from(tableName)
       .select('*')
       .order(orderField, { ascending })
+      // Tie-break on id so identical `orderField` values page deterministically.
+      .order('id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
 
     if (error) throw error;

@@ -17,11 +17,6 @@ interface Props {
   onClose: () => void;
 }
 
-const PRIORITY_OPTIONS = [
-  { v: "Low", l: "Low" },
-  { v: "Medium", l: "Medium" },
-  { v: "High", l: "High" },
-];
 
 const CHANNEL_OPTIONS = [
   { v: "Email", l: "Email" },
@@ -40,9 +35,9 @@ export function FirstRunWizard({ open, onClose }: Props) {
 
   const [name, setName] = useState("");
   const [type, setType] = useState(DEFAULT_TYPE);
-  const [priority, setPriority] = useState("Medium");
+  
   const [description, setDescription] = useState("");
-  const [primaryChannel, setPrimaryChannel] = useState("Email");
+  const [enabledChannels, setEnabledChannels] = useState<string[]>(["Email"]);
   const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10));
   const [endDate, setEndDate] = useState(() => {
     const d = new Date(); d.setDate(d.getDate() + 30); return d.toISOString().slice(0, 10);
@@ -51,9 +46,9 @@ export function FirstRunWizard({ open, onClose }: Props) {
   const reset = () => {
     setName("");
     setType(DEFAULT_TYPE);
-    setPriority("Medium");
+    
     setDescription("");
-    setPrimaryChannel("Email");
+    setEnabledChannels(["Email"]);
     setStartDate(new Date().toISOString().slice(0, 10));
     const d = new Date(); d.setDate(d.getDate() + 30);
     setEndDate(d.toISOString().slice(0, 10));
@@ -85,10 +80,10 @@ export function FirstRunWizard({ open, onClose }: Props) {
       {
         campaign_name: name.trim(),
         campaign_type: type,
-        priority,
+        
         description: description.trim() || null,
-        primary_channel: primaryChannel,
-        enabled_channels: [primaryChannel],
+        primary_channel: enabledChannels[0] || "Email",
+        enabled_channels: enabledChannels.length > 0 ? enabledChannels : ["Email"],
         start_date: startDate,
         end_date: endDate,
         status: "Draft",
@@ -126,41 +121,26 @@ export function FirstRunWizard({ open, onClose }: Props) {
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Q2 EMEA Outreach"
+              placeholder="Enter Name"
               className="h-8 text-sm"
               autoFocus
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label className="text-xs">Type</Label>
-              <Select value={type} onValueChange={setType}>
-                <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {CAMPAIGN_TYPE_OPTIONS.map((o) => (
-                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label className="text-xs">Priority</Label>
-              <Select value={priority} onValueChange={setPriority}>
-                <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
-                <SelectContent>{PRIORITY_OPTIONS.map((o) => <SelectItem key={o.v} value={o.v}>{o.l}</SelectItem>)}</SelectContent>
-              </Select>
-            </div>
+          <div>
+            <Label className="text-xs">Type</Label>
+            <Select value={type} onValueChange={setType}>
+              <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {CAMPAIGN_TYPE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <Label className="text-xs">Channel</Label>
-              <Select value={primaryChannel} onValueChange={setPrimaryChannel}>
-                <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
-                <SelectContent>{CHANNEL_OPTIONS.map((o) => <SelectItem key={o.v} value={o.v}>{o.l}</SelectItem>)}</SelectContent>
-              </Select>
-            </div>
+
+          <div className="grid grid-cols-2 gap-3">
             <div>
               <Label className="text-xs">Start</Label>
               <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="h-8 text-sm" />
@@ -170,6 +150,38 @@ export function FirstRunWizard({ open, onClose }: Props) {
               <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="h-8 text-sm" />
             </div>
           </div>
+
+          <div>
+            <Label className="text-xs">Channels <span className="text-muted-foreground font-normal">(select one or more)</span></Label>
+            <div className="flex flex-wrap gap-1.5 mt-1">
+              {CHANNEL_OPTIONS.map((o) => {
+                const active = enabledChannels.includes(o.v);
+                return (
+                  <button
+                    key={o.v}
+                    type="button"
+                    onClick={() => {
+                      setEnabledChannels((prev) => {
+                        if (prev.includes(o.v)) {
+                          const next = prev.filter((c) => c !== o.v);
+                          return next.length === 0 ? prev : next;
+                        }
+                        return [...prev, o.v];
+                      });
+                    }}
+                    className={`px-2.5 h-7 rounded-md border text-xs transition-colors ${
+                      active
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-background text-foreground border-input hover:bg-accent"
+                    }`}
+                  >
+                    {o.l}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {!datesValid && (startDate && endDate) && (
             <p className="text-xs text-destructive">End date must be on or after start date.</p>
           )}

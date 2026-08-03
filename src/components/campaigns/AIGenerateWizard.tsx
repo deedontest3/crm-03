@@ -7,11 +7,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sparkles, Loader2, Mail, Linkedin, Phone, ArrowLeft, Check, X, RefreshCw } from "lucide-react";
+import { Sparkles, Mail, Linkedin, Phone, ArrowLeft, Check, X, RefreshCw } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "@/hooks/use-toast";
+import { AppLoader } from "@/components/ui/loader";
 
 type AiKind = "email" | "linkedin-connection" | "linkedin-followup" | "phone";
 
@@ -35,14 +36,13 @@ interface Props {
 
 const CHANNEL_TO_KINDS: Record<Channel, AiKind[]> = {
   Email: ["email"],
-  LinkedIn: ["linkedin-connection", "linkedin-followup"],
+  LinkedIn: ["linkedin-connection"],
   Phone: ["phone"],
 };
 
 const KIND_OPTIONS: { id: AiKind; label: string; icon: typeof Mail }[] = [
   { id: "email", label: "Email", icon: Mail },
-  { id: "linkedin-connection", label: "LinkedIn Connection", icon: Linkedin },
-  { id: "linkedin-followup", label: "LinkedIn Follow-up", icon: Linkedin },
+  { id: "linkedin-connection", label: "LinkedIn Message", icon: Linkedin },
   { id: "phone", label: "Call Script", icon: Phone },
 ];
 
@@ -376,7 +376,7 @@ export function AIGenerateWizard({ open, onOpenChange, campaignId, campaignConte
             <>
               <Button variant="outline" onClick={() => onOpenChange(false)} disabled={generating}>Cancel</Button>
               <Button onClick={handleGenerate} disabled={generating || !anySelected || !context.trim()} className="gap-1.5">
-                {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                {generating ? <AppLoader variant="inline" /> : <Sparkles className="h-3.5 w-3.5" />}
                 {generating ? "Generating…" : "Generate Preview"}
               </Button>
             </>
@@ -389,7 +389,7 @@ export function AIGenerateWizard({ open, onOpenChange, campaignId, campaignConte
                 <X className="h-3.5 w-3.5 mr-1" /> Discard all
               </Button>
               <Button onClick={handleSaveSelected} disabled={saving || !previews.some(p => p.include && !p.error)} className="gap-1.5">
-                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                {saving ? <AppLoader variant="inline" /> : <Check className="h-3.5 w-3.5" />}
                 {saving ? "Saving…" : `Save ${previews.filter(p => p.include && !p.error).length} selected`}
               </Button>
             </>

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -59,7 +59,7 @@ export function EmailSkipAuditTable({ campaignId, embedded }: Props) {
     if (c !== correlationFilter) setCorrelationFilter(c);
   }, [searchParams]);
 
-  const { data: rows = [], isLoading } = useQuery({
+  const { data: rows = [], isLoading, isFetching } = useQuery({
     queryKey: ["email-skip-log", campaignId, from, to, reasonFilter, correlationFilter],
     queryFn: async () => {
       let q = supabase
@@ -76,6 +76,7 @@ export function EmailSkipAuditTable({ campaignId, embedded }: Props) {
       if (error) throw error;
       return data || [];
     },
+    placeholderData: keepPreviousData,
   });
 
   const filtered = useMemo(() => {
@@ -202,8 +203,8 @@ export function EmailSkipAuditTable({ campaignId, embedded }: Props) {
                   <TableHead>Parent subject</TableHead>
                 </TableRow>
               </TableHeader>
-              <TableBody>
-                {isLoading ? (
+              <TableBody className={isFetching && !isLoading ? "opacity-70 transition-opacity" : ""}>
+                {isLoading && rows.length === 0 ? (
                   <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">Loading…</TableCell></TableRow>
                 ) : pageRows.length === 0 ? (
                   <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No skipped replies in this range.</TableCell></TableRow>

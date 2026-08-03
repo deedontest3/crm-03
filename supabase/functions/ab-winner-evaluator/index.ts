@@ -1,8 +1,9 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { requireCronSecret } from "../_shared/auth-gate.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-cron-secret",
 };
 
 const MIN_SENT_PER_VARIANT = 50;
@@ -10,12 +11,10 @@ const MIN_SENT_PER_VARIANT = 50;
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
-  const cronSecret = Deno.env.get("CAMPAIGN_CRON_SECRET");
-  if (cronSecret && req.headers.get("x-cron-secret") !== cronSecret) {
-    return new Response(JSON.stringify({ error: "Forbidden" }), {
-      status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  }
+  // Cron-only endpoint. Fail-closed cron gate.
+  const cron = requireCronSecret(req);
+  if ("response" in cron) return cron.response;
+
 
   try {
     const supabase = createClient(

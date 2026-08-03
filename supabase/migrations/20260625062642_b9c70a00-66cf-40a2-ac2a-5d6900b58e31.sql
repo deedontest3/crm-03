@@ -1,0 +1,1 @@
+ALTER TABLE public.deals DROP COLUMN IF EXISTS poc;

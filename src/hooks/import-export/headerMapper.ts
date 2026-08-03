@@ -256,6 +256,10 @@ export const createHeaderMapper = (tableName: string) => {
         'customer_challenges': 'customer_challenges',
         'customer challenges': 'customer_challenges',
         'challenges': 'customer_challenges',
+        'current_solution': 'current_solution',
+        'current solution': 'current_solution',
+        'existing solution': 'current_solution',
+        'existing_solution': 'current_solution',
         'relationship_strength': 'relationship_strength',
         'relationship strength': 'relationship_strength',
         'relationship': 'relationship_strength',
@@ -274,6 +278,8 @@ export const createHeaderMapper = (tableName: string) => {
         'close date': 'expected_closing_date',
         'expected close': 'expected_closing_date',
         'due date': 'expected_closing_date',
+        'expected rfq closing date': 'expected_closing_date',
+        'target closure date': 'expected_closing_date',
         'business_value': 'business_value',
         'business value': 'business_value',
         'value proposition': 'business_value',
@@ -368,14 +374,32 @@ export const createHeaderMapper = (tableName: string) => {
         'lost reason': 'lost_reason',
         'loss reason': 'lost_reason',
         'why lost': 'lost_reason',
-        'need_improvement': 'need_improvement',
-        'need improvement': 'need_improvement',
-        'improvement': 'need_improvement',
-        'lessons learned': 'need_improvement',
         'drop_reason': 'drop_reason',
         'drop reason': 'drop_reason',
         'dropped reason': 'drop_reason',
-        'why dropped': 'drop_reason'
+        'why dropped': 'drop_reason',
+
+        // New stage fields
+        'opportunity_summary': 'opportunity_summary',
+        'opportunity summary': 'opportunity_summary',
+        'opportunity_description': 'opportunity_description',
+        'opportunity description': 'opportunity_description',
+        'customer_objection': 'customer_objection',
+        'customer objection': 'customer_objection',
+        'competition': 'competition',
+        'competitors': 'competitors',
+        'final_tcv': 'final_tcv',
+        'final tcv': 'final_tcv',
+        'po_status': 'po_status',
+        'po status': 'po_status',
+        'expected_signing_date': 'expected_signing_date',
+        'expected signing date': 'expected_signing_date',
+        'expected po signing date': 'expected_signing_date',
+        'hold_reason': 'hold_reason',
+        'hold reason': 'hold_reason',
+        'reason for hold': 'hold_reason',
+        'revise_date': 'revise_date',
+        'revise date': 'revise_date'
       };
       
       // Check for mapping (case-insensitive)
@@ -426,6 +450,13 @@ export const createHeaderMapper = (tableName: string) => {
     const lowerHeader = trimmedHeader.toLowerCase();
     for (const [key, value] of Object.entries(mappings)) {
       if (key === lowerHeader || key.replace(/[\s_-]+/g, '_') === normalized) {
+        // Generic aliases are shared by multiple modules. Never return a field
+        // that the selected table does not support (for example Mobile in a
+        // legacy Contacts CSV after contacts.mobile_no was retired).
+        if (!config.allowedColumns.includes(value)) {
+          console.log(`Ignoring unsupported field for ${tableName}: ${trimmedHeader} -> ${value}`);
+          return null;
+        }
         console.log(`Generic mapping found: ${trimmedHeader} -> ${value}`);
         return value;
       }

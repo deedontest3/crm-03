@@ -1,8 +1,9 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { requireCronSecret } from '../_shared/auth-gate.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-cron-secret',
 }
 
 const BACKUP_TABLES = [
@@ -57,6 +58,12 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders })
   }
+
+  // Cron-only endpoint. Prevents anyone with the public anon key from forcing
+  // off-schedule backups and, via MAX_BACKUPS rotation, prematurely deleting
+  // legitimate older backups.
+  const cron = requireCronSecret(req)
+  if ('response' in cron) return cron.response
 
   try {
     const supabaseUrl = Deno.env.get('MY_SUPABASE_URL') || Deno.env.get('SUPABASE_URL')!

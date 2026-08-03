@@ -8,9 +8,10 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   BarChart, Bar, PieChart, Pie, Cell, Legend,
 } from 'recharts';
-import { Mail, Eye, TrendingUp, Download, XCircle, Reply, Loader2 } from 'lucide-react';
+import { Mail, Eye, TrendingUp, Download, XCircle, Reply } from "lucide-react";
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { AppLoader } from "@/components/ui/loader";
 
 interface DailyStats {
   date: string;
@@ -146,7 +147,7 @@ export const EmailAnalyticsDashboard = () => {
             </SelectContent>
           </Select>
           <Button variant="outline" onClick={handleExport} disabled={dailyStats.length === 0 || exporting}>
-            {exporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
+            {exporting ? <AppLoader variant="inline" className="mr-2" /> : <Download className="h-4 w-4 mr-2" />}
             Export
           </Button>
         </div>

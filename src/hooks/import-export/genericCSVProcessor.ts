@@ -10,6 +10,8 @@ import {
   isValidUUID,
   type UserResolverResult 
 } from './userNameResolver';
+import { runWithConcurrency } from './concurrentBatch';
+
 
 export interface ProcessingOptions {
   tableName: string;
@@ -156,33 +158,35 @@ export class GenericCSVProcessor {
       errors: []
     };
 
-    for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
-      const row = rows[rowIndex];
-      
-      try {
+    // Run rows in bounded-concurrency chunks (concurrency 8) rather than
+    // strictly serial awaits — trims minutes off multi-thousand-row imports
+    // while keeping per-row error attribution.
+    type RowOutcome =
+      | { kind: 'success' }
+      | { kind: 'update' }
+      | { kind: 'error'; message: string };
+
+    const settled = await runWithConcurrency(
+      rows,
+      async (row, rowIndex): Promise<RowOutcome> => {
         // Convert row to object
         const rowObj: Record<string, any> = {};
-        
+
         headers.forEach((header, index) => {
           const dbColumn = columnMap[header];
           if (dbColumn && row[index] !== undefined) {
             let value = row[index];
-            
+
             // Normalize LinkedIn URLs (add https:// if missing)
             if (dbColumn === 'linkedin' && value) {
               value = this.normalizeLinkedInUrl(value);
             }
-            
+
             // Apply date formatting if needed
             const processedValue = DateFormatUtils.processFieldForImport(dbColumn, value);
             rowObj[dbColumn] = processedValue;
           }
         });
-
-        // Debug: log first row object
-        if (rowIndex === 0) {
-          console.log('First row object (before user resolution):', rowObj);
-        }
 
         // Normalize country and auto-populate region for accounts
         if (options.tableName === 'accounts') {
@@ -192,117 +196,124 @@ export class GenericCSVProcessor {
           if (rowObj.country && !rowObj.region) {
             rowObj.region = getRegionForCountry(rowObj.country);
           }
+          // Enum guardrail: normalize status to the four allowed values.
+          if (rowObj.status != null && String(rowObj.status).trim() !== '') {
+            const allowed = ['New', 'Working', 'Qualified', 'Inactive'];
+            const raw = String(rowObj.status).trim().toLowerCase();
+            const match = allowed.find((v) => v.toLowerCase() === raw);
+            if (match) {
+              rowObj.status = match;
+            } else {
+              return {
+                kind: 'error',
+                message: `Row ${rowIndex + 1}: invalid status "${rowObj.status}". Allowed: ${allowed.join(', ')}.`,
+              };
+            }
+          }
         }
 
         // Resolve user reference fields (convert text names to UUIDs)
         this.resolveUserFields(rowObj, options.userId);
 
-        // Debug: log first row after user resolution
-        if (rowIndex === 0) {
-          console.log('First row object (after user resolution):', rowObj);
-        }
-
         // Validate record
         const isValid = recordValidator(rowObj);
         if (!isValid) {
-          result.errorCount++;
           const missingFields = this.getMissingFields(rowObj, options.tableName);
-          result.errors.push(`Row ${rowIndex + 1}: Validation failed. Missing required: ${missingFields.join(', ')}`);
-          console.log(`Row ${rowIndex + 1} validation failed. Object:`, rowObj);
-          continue;
+          return {
+            kind: 'error',
+            message: `Row ${rowIndex + 1}: Validation failed. Missing required: ${missingFields.join(', ')}`,
+          };
         }
 
-        // Check for duplicate by name for accounts (before UUID check)
-        let existingRecord = null;
-        if (options.tableName === 'accounts' && rowObj.account_name) {
+        // Match an existing record by ID only. A name collision without an ID
+        // is treated as a duplicate-conflict error rather than a silent
+        // overwrite.
+        let existingRecord: { id: string } | null = null;
+        if (rowObj.id && isValidUUID(rowObj.id)) {
+          const { data: existing } = await supabase
+            .from(options.tableName as any)
+            .select('id')
+            .eq('id', rowObj.id)
+            .single();
+          existingRecord = (existing as { id: string } | null) ?? null;
+        } else if (rowObj.id && !isValidUUID(rowObj.id)) {
+          delete rowObj.id;
+        }
+
+        if (!existingRecord && options.tableName === 'accounts' && rowObj.account_name) {
           const { data: existingByName } = await supabase
             .from('accounts')
             .select('id')
             .eq('account_name', rowObj.account_name)
             .limit(1)
             .maybeSingle();
-          
           if (existingByName) {
-            existingRecord = existingByName;
-            console.log(`Duplicate account found by name: "${rowObj.account_name}" -> updating existing ID ${existingByName.id}`);
+            return {
+              kind: 'error',
+              message: `Row ${rowIndex + 1}: An account named "${rowObj.account_name}" already exists. Include its id column to update it, or rename the CSV row.`,
+            };
           }
         }
 
-        // Check if record exists by ID (if ID is provided and is a valid UUID) and no name match was found
-        if (!existingRecord && rowObj.id && isValidUUID(rowObj.id)) {
-          const { data: existing } = await supabase
-            .from(options.tableName as any)
-            .select('id')
-            .eq('id', rowObj.id)
-            .single();
-          
-          existingRecord = existing;
-        } else if (!existingRecord && rowObj.id && !isValidUUID(rowObj.id)) {
-          // Remove invalid ID (e.g., Zoho's numeric IDs like "zcrm_284552000000268127")
-          console.log(`Removing invalid ID "${rowObj.id}" - will generate new UUID`);
-          delete rowObj.id;
-        }
-
         if (existingRecord) {
-          // Update existing record
           const updateData = { ...rowObj };
           updateData.modified_by = options.userId;
           updateData.modified_time = new Date().toISOString();
-          
-          // Remove id from update data to avoid conflicts
           delete updateData.id;
-          
+
           const { error: updateError } = await supabase
             .from(options.tableName as any)
             .update(updateData)
             .eq('id', existingRecord.id);
 
           if (updateError) {
-            result.errorCount++;
-            result.errors.push(`Row ${rowIndex + 1}: Update failed - ${updateError.message}`);
-            console.error(`Row ${rowIndex + 1} update error:`, updateError);
-          } else {
-            result.updateCount++;
+            return { kind: 'error', message: `Row ${rowIndex + 1}: Update failed - ${updateError.message}` };
           }
-        } else {
-          // Insert new record
-          const insertData = { ...rowObj };
-          
-          // Always set created_by and modified_by to the importing user
-          insertData.created_by = options.userId;
-          insertData.modified_by = options.userId;
-          
-          // Remove id if not provided or not valid, let database generate one
-          if (!insertData.id || !isValidUUID(insertData.id)) {
-            delete insertData.id;
-          }
-
-          const { error: insertError } = await supabase
-            .from(options.tableName as any)
-            .insert([insertData]);
-
-          if (insertError) {
-            result.errorCount++;
-            // Provide more specific error messages
-            let errorMsg = insertError.message;
-            if (insertError.message.includes('uuid')) {
-              errorMsg = 'Invalid UUID format in record';
-            } else if (insertError.message.includes('violates')) {
-              errorMsg = `Constraint violation: ${insertError.message}`;
-            }
-            result.errors.push(`Row ${rowIndex + 1}: Insert failed - ${errorMsg}`);
-            console.error(`Row ${rowIndex + 1} insert error:`, insertError);
-          } else {
-            result.successCount++;
-          }
+          return { kind: 'update' };
         }
 
-      } catch (error: any) {
+        const insertData = { ...rowObj };
+        insertData.created_by = options.userId;
+        insertData.modified_by = options.userId;
+        if (!insertData.id || !isValidUUID(insertData.id)) {
+          delete insertData.id;
+        }
+
+        const { error: insertError } = await supabase
+          .from(options.tableName as any)
+          .insert([insertData]);
+
+        if (insertError) {
+          let errorMsg = insertError.message;
+          if (insertError.message.includes('uuid')) {
+            errorMsg = 'Invalid UUID format in record';
+          } else if (insertError.message.includes('violates')) {
+            errorMsg = `Constraint violation: ${insertError.message}`;
+          }
+          return { kind: 'error', message: `Row ${rowIndex + 1}: Insert failed - ${errorMsg}` };
+        }
+        return { kind: 'success' };
+      },
+      { concurrency: 8 }
+    );
+
+    for (const s of settled) {
+      if (s.ok === false) {
         result.errorCount++;
-        result.errors.push(`Row ${rowIndex + 1}: Processing error - ${error.message}`);
-        console.error(`Row ${rowIndex + 1} processing error:`, error);
+        result.errors.push(`Row processing error - ${s.error.message}`);
+        continue;
+      }
+      const v = s.value;
+      switch (v.kind) {
+        case 'success': result.successCount++; break;
+        case 'update': result.updateCount++; break;
+        case 'error':
+          result.errorCount++;
+          result.errors.push(v.message);
+          break;
       }
     }
+
 
     return result;
   }

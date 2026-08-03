@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { Deal, DealStage } from "@/types/deal";
@@ -8,11 +9,14 @@ import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
 import { DashboardStats } from "@/components/dashboard/DashboardStats";
 import { DashboardContent } from "@/components/dashboard/DashboardContent";
 import { useToast } from "@/hooks/use-toast";
+import { invalidateDealCaches } from "@/lib/dealCacheInvalidation";
+import { AppLoader } from "@/components/ui/loader";
 
 const Index = () => {
   const { user, loading: authLoading, signOut } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   
   const [deals, setDeals] = useState<Deal[]>([]);
   const [loading, setLoading] = useState(true);
@@ -40,6 +44,7 @@ const Index = () => {
       const { data, error } = await supabase
         .from('deals')
         .select('*')
+        .is('archived_at', null)
         .order('modified_at', { ascending: false });
 
       if (error) {
@@ -67,7 +72,7 @@ const Index = () => {
     try {
       const { error } = await supabase
         .from('deals')
-        .update({ ...updates, modified_at: new Date().toISOString() })
+        .update({ ...updates, modified_at: new Date().toISOString() } as any)
         .eq('id', dealId);
 
       if (error) throw error;
@@ -75,6 +80,7 @@ const Index = () => {
       setDeals(prev => prev.map(deal => 
         deal.id === dealId ? { ...deal, ...updates } : deal
       ));
+      invalidateDealCaches(queryClient);
     } catch (error) {
       toast({
         title: "Error",
@@ -101,6 +107,7 @@ const Index = () => {
         if (error) throw error;
 
         setDeals(prev => [data as unknown as Deal, ...prev]);
+        invalidateDealCaches(queryClient);
       } else if (selectedDeal) {
         const updateData = {
           ...dealData,
@@ -125,21 +132,28 @@ const Index = () => {
     try {
       const { error } = await supabase
         .from('deals')
-        .delete()
+        .update({
+          archived_at: new Date().toISOString(),
+          archived_by: user?.id ?? null,
+          modified_at: new Date().toISOString(),
+          modified_by: user?.id ?? null,
+        } as any)
         .in('id', dealIds);
 
       if (error) throw error;
 
       setDeals(prev => prev.filter(deal => !dealIds.includes(deal.id)));
-      
+      invalidateDealCaches(queryClient);
+
+
       toast({
-        title: "Success",
-        description: `Deleted ${dealIds.length} deal(s)`,
+        title: "Moved to Archive",
+        description: `${dealIds.length} deal(s) archived`,
       });
     } catch (error) {
       toast({
         title: "Error",
-        description: "Failed to delete deals",
+        description: "Failed to archive deals",
         variant: "destructive",
       });
     }
@@ -165,7 +179,7 @@ const Index = () => {
               ...dealData,
               modified_by: user?.id,
               deal_name: dealData.project_name || existingDeal.deal_name
-            })
+            } as any)
             .eq('id', existingDeal.id)
             .select()
             .single();
@@ -183,7 +197,7 @@ const Index = () => {
 
           const { data, error } = await supabase
             .from('deals')
-            .insert(newDealData)
+            .insert(newDealData as any)
             .select()
             .single();
 
@@ -193,6 +207,8 @@ const Index = () => {
       }
 
       await fetchDeals();
+      invalidateDealCaches(queryClient);
+
       
       toast({
         title: "Import successful",
@@ -233,14 +249,7 @@ const Index = () => {
   };
 
   if (authLoading || loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
-          <p className="text-muted-foreground">Loading...</p>
-        </div>
-      </div>
-    );
+    return <AppLoader variant="page" label="Loading dashboard…" />;
   }
 
   if (!user) {

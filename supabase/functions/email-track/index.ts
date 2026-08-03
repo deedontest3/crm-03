@@ -23,9 +23,28 @@ function pixelResponse() {
 }
 
 // Heuristic: detect prefetch / scanner opens that should NOT count as a real open.
-// Sources: Outlook Safe Links, Google Image Proxy, Mimecast, Barracuda, Proofpoint,
-// Microsoft "ImageProxy" requests, anti-virus scanners.
-function looksLikeBot(req: Request): boolean {
+// IP prefixes are loaded from `email_bot_ip_ranges` so admins can update without redeploy.
+let IP_CACHE: { prefixes: string[]; expiresAt: number } = { prefixes: [], expiresAt: 0 };
+const IP_CACHE_TTL_MS = 5 * 60_000;
+
+async function loadBotIpPrefixes(supa: ReturnType<typeof createClient>): Promise<string[]> {
+  const now = Date.now();
+  if (IP_CACHE.expiresAt > now) return IP_CACHE.prefixes;
+  try {
+    const { data } = await supa
+      .from("email_bot_ip_ranges")
+      .select("cidr")
+      .eq("is_enabled", true);
+    const prefixes = ((data || []) as { cidr: string }[]).map((r) => r.cidr.toLowerCase()).filter(Boolean);
+    IP_CACHE = { prefixes, expiresAt: now + IP_CACHE_TTL_MS };
+    return prefixes;
+  } catch (_e) {
+    // On read error, keep last good cache; if empty, fall back to nothing (UA still gates).
+    return IP_CACHE.prefixes;
+  }
+}
+
+function looksLikeBot(req: Request, ipPrefixes: string[]): boolean {
   const ua = (req.headers.get("user-agent") || "").toLowerCase();
   const fwd = (req.headers.get("x-forwarded-for") || "").toLowerCase();
   const purpose = (req.headers.get("purpose") || req.headers.get("sec-purpose") || "").toLowerCase();
@@ -33,34 +52,18 @@ function looksLikeBot(req: Request): boolean {
   if (purpose.includes("prefetch")) return true;
 
   const botSignals = [
-    "googleimageproxy",
-    "ggpht.com",
-    "bingpreview",
-    "yahoomailproxy",
-    "mimecast",
-    "proofpoint",
-    "barracuda",
-    "microsoft office",
-    "msofficeoutlook",
-    "outlookimageproxy",
-    "exchange",
-    "symantec",
-    "trendmicro",
-    "forcepoint",
-    "fireeye",
-    "sophos",
-    "linkedin",
-    "facebookexternalhit",
-    "slackbot",
-    "twitterbot",
-    "headlesschrome",
-    "phantomjs",
-    "puppeteer",
+    "googleimageproxy", "ggpht.com", "bingpreview", "yahoomailproxy",
+    "mimecast", "proofpoint", "barracuda", "microsoft office",
+    "msofficeoutlook", "outlookimageproxy", "exchange", "symantec",
+    "trendmicro", "forcepoint", "fireeye", "sophos",
+    "linkedin", "facebookexternalhit", "slackbot", "twitterbot",
+    "headlesschrome", "phantomjs", "puppeteer",
   ];
   if (botSignals.some((s) => ua.includes(s))) return true;
 
-  // Microsoft Safelink/ATP IP ranges proxy through known prefixes
-  if (fwd.includes("40.94.") || fwd.includes("52.103.") || fwd.includes("104.47.")) return true;
+  // Admin-managed CIDR/prefix list (substring match on x-forwarded-for is sufficient
+  // for the broad ranges we care about; full CIDR parsing is overkill here).
+  if (ipPrefixes.length > 0 && ipPrefixes.some((p) => fwd.includes(p))) return true;
 
   return false;
 }
@@ -90,7 +93,8 @@ Deno.serve(async (req) => {
 
     if (existing) {
       const now = new Date().toISOString();
-      const isBot = looksLikeBot(req);
+      const ipPrefixes = await loadBotIpPrefixes(supabase);
+      const isBot = looksLikeBot(req, ipPrefixes);
 
       // Bot heuristic v2:
       //   - Real users almost never open in <5s (was 30s — that suppressed many

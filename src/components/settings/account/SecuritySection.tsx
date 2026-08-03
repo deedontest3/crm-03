@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { format } from 'date-fns';
-import { Key, Loader2, Monitor, Smartphone, Clock, LogOut, RefreshCw, Shield } from 'lucide-react';
+import { Key, Monitor, Smartphone, Clock, LogOut, RefreshCw, Shield } from "lucide-react";
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { useAuth } from '@/hooks/useAuth';
@@ -19,6 +19,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle
 } from '@/components/ui/alert-dialog';
+import { AppLoader } from "@/components/ui/loader";
 
 interface Session {
   id: string;
@@ -69,6 +70,7 @@ const SecuritySection = ({ userId }: SecuritySectionProps) => {
         .select('*')
         .eq('user_id', userId)
         .eq('is_active', true)
+        .gte('last_active_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
         .order('last_active_at', { ascending: false });
 
       if (error) throw error;
@@ -117,12 +119,18 @@ const SecuritySection = ({ userId }: SecuritySectionProps) => {
 
   const confirmTerminateAllOthers = async () => {
     try {
+      // Actually revoke the refresh tokens for this user's other devices, not
+      // just flip the bookkeeping flag. Without this, a lost/stolen device's
+      // session keeps working until it naturally expires.
+      const { error: revokeError } = await supabase.auth.signOut({ scope: 'others' });
+      if (revokeError) throw revokeError;
+
       await supabase
         .from('user_sessions')
         .update({ is_active: false })
         .eq('user_id', userId)
         .neq('session_token', currentBrowserSessionId);
-      toast.success('All other sessions terminated');
+      toast.success('All other sessions signed out');
       fetchSessions();
     } catch (error) {
       toast.error('Failed to terminate sessions');
@@ -213,7 +221,7 @@ const SecuritySection = ({ userId }: SecuritySectionProps) => {
           <CardContent>
             {loading ? (
               <div className="flex justify-center py-6">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                <AppLoader variant="inline" />
               </div>
             ) : sessions.length === 0 ? (
               <p className="text-center text-sm text-muted-foreground py-4">

@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
+import { usePermissions } from "@/contexts/PermissionsContext";
 import { useState } from "react";
 import { useUnreadNotificationCount } from "@/hooks/useUnreadNotificationCount";
 import {
@@ -35,8 +36,8 @@ const menuItems = [
   { title: "Dashboard", url: "/", icon: Home, prefetch: () => import("@/pages/Dashboard") },
   { title: "Accounts", url: "/accounts", icon: Building2, prefetch: () => import("@/pages/Accounts") },
   { title: "Contacts", url: "/contacts", icon: Users, prefetch: () => import("@/pages/Contacts") },
-  { title: "Deals", url: "/deals", icon: BarChart3, prefetch: () => import("@/pages/DealsPage") },
   { title: "Campaigns", url: "/campaigns", icon: Megaphone, prefetch: () => import("@/pages/Campaigns") },
+  { title: "Deals", url: "/deals", icon: BarChart3, prefetch: () => import("@/pages/DealsPage") },
   { title: "Action Items", url: "/action-items", icon: CheckSquare, prefetch: () => import("@/pages/ActionItems") },
 ];
 
@@ -52,8 +53,17 @@ export function AppSidebar({ isFixed = false, isOpen, onToggle }: AppSidebarProp
   const location = useLocation();
   const navigate = useNavigate();
   const { user, signOut } = useAuth();
+  const { hasPageAccess, isAdmin, loading: permsLoading } = usePermissions();
   const currentPath = location.pathname;
   const unreadCount = useUnreadNotificationCount();
+
+  // Filter nav items by page permissions (don't filter while loading to avoid flash)
+  const visibleMenuItems = permsLoading
+    ? menuItems
+    : menuItems.filter((item) => hasPageAccess(item.url));
+  
+  const showNotifications = permsLoading || hasPageAccess('/notifications');
+  const showSettings = permsLoading || isAdmin || hasPageAccess('/settings');
 
   // Use external state if provided (for fixed mode), otherwise use internal state
   const sidebarOpen = isFixed ? (isOpen ?? false) : isPinned;
@@ -92,7 +102,7 @@ export function AppSidebar({ isFixed = false, isOpen, onToggle }: AppSidebarProp
 
   return (
     <div 
-      className={`h-screen flex flex-col border-r border-sidebar-border bg-sidebar-background transition-all duration-300 ease-in-out relative ${
+      className={`h-dvh flex flex-col border-r border-sidebar-border bg-sidebar-background transition-all duration-300 ease-in-out relative ${
         isFixed ? 'relative' : ''
       }`}
       style={{ 
@@ -128,7 +138,7 @@ export function AppSidebar({ isFixed = false, isOpen, onToggle }: AppSidebarProp
       {/* Menu Items */}
       <div className="flex-1 py-4">
         <nav className="space-y-1 px-3">
-          {menuItems.map((item) => {
+          {visibleMenuItems.map((item) => {
             const active = isActive(item.url);
             const menuButton = (
               <NavLink
@@ -179,12 +189,14 @@ export function AppSidebar({ isFixed = false, isOpen, onToggle }: AppSidebarProp
               </div>
             );
           })}
+
         </nav>
       </div>
 
       {/* Bottom Section */}
       <div className="border-t border-sidebar-border p-3 space-y-1">
         {/* Notification Bell */}
+        {showNotifications && (
         <div>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -223,8 +235,10 @@ export function AppSidebar({ isFixed = false, isOpen, onToggle }: AppSidebarProp
             </TooltipContent>
           </Tooltip>
         </div>
+        )}
 
         {/* Settings */}
+        {showSettings && (
         <div>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -258,6 +272,9 @@ export function AppSidebar({ isFixed = false, isOpen, onToggle }: AppSidebarProp
             </TooltipContent>
           </Tooltip>
         </div>
+        )}
+
+
 
         {/* Pin Toggle Button */}
         <div>
@@ -295,6 +312,7 @@ export function AppSidebar({ isFixed = false, isOpen, onToggle }: AppSidebarProp
             <TooltipTrigger asChild>
               <button
                 onClick={() => setShowSignOutDialog(true)}
+                aria-label="Sign out"
                 className="flex items-center h-10 w-full rounded-lg transition-colors text-sidebar-foreground/70 hover:text-sidebar-primary hover:bg-sidebar-accent/50 font-medium"
               >
                 <div className="w-10 h-10 flex items-center justify-center flex-shrink-0">

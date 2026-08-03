@@ -6,12 +6,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import {
-  Search, ChevronRight, ChevronDown, Users, Mail, Phone, Linkedin, Building2, Loader2,
-} from "lucide-react";
+import { Search, ChevronRight, ChevronDown, Users, Mail, Phone, Linkedin, Building2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { toast } from "@/hooks/use-toast";
 import { isReachableEmail, isReachableLinkedIn, isReachablePhone } from "@/lib/email";
 import { MultiSelectChips } from "./segments/MultiSelectChips";
@@ -21,6 +19,7 @@ import {
   type ScopedAccount,
   type ScopedContact,
 } from "@/utils/campaignAudienceScope";
+import { AppLoader } from "@/components/ui/loader";
 
 /**
  * Add Audience picker — shows the FULL scoped universe (regions/countries),
@@ -82,12 +81,14 @@ export function AddAudienceModal({
     queryFn: () => fetchScopedAccounts(selectedRegions, selectedCountries),
     enabled: open,
     staleTime: 0,
+    placeholderData: keepPreviousData,
   });
   const { data: scopedContacts = [], isLoading: contactsLoading } = useQuery({
     queryKey: ["audience-modal-contacts", scopedAccounts.map((a) => a.id).sort().join(",")],
     queryFn: () => fetchScopedContactsForAccounts(scopedAccounts),
     enabled: open && scopedAccounts.length > 0,
     staleTime: 0,
+    placeholderData: keepPreviousData,
   });
   const { data: suppressedEmails } = useQuery({
     queryKey: ["audience-modal-suppression"],
@@ -96,10 +97,13 @@ export function AddAudienceModal({
     staleTime: 60_000,
   });
 
-  // Seed selection from existing campaign membership whenever the modal opens
-  // (or membership changes while open).
-  const existingAccountKey = existingAccountIds.join(",");
-  const existingContactKey = existingContactIds.join(",");
+  // Seed selection from existing campaign membership ONLY when the modal
+  // opens (transition false→true). We deliberately do NOT re-seed on every
+  // change to existingAccountIds/existingContactIds while the modal is open
+  // — those arrays may be replaced (new reference, reordered) by background
+  // React Query refetches, which would silently wipe the user's in-progress
+  // filter selections (Industry/Position) and confuse them into thinking the
+  // cascade isn't working.
   useEffect(() => {
     if (!open) return;
     setSelectedAccountIds(new Set(existingAccountIds));
@@ -109,7 +113,7 @@ export function AddAudienceModal({
     setIndustryFilter([]);
     setPositionFilter([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, existingAccountKey, existingContactKey]);
+  }, [open]);
 
   // contact lookup by lowercase company name
   const contactsByAccountName = useMemo(() => {
@@ -122,23 +126,72 @@ export function AddAudienceModal({
     return map;
   }, [scopedContacts]);
 
-  // unique industry / position lists for the filter pickers
-  const industryOptions = useMemo(() => {
+  // Cascading option lists. Each dropdown's options are computed from the
+  // OTHER active filter so the picker only ever shows values that can
+  // actually return rows. Selecting Industry = "Automotive" restricts the
+  // Position dropdown to positions found in Automotive accounts, and vice
+  // versa. Already-selected chips that no longer match are kept in the list
+  // so the user can see/clear them.
+  const posSetLc = useMemo(
+    () => (positionFilter.length ? new Set(positionFilter.map((p) => p.toLowerCase())) : null),
+    [positionFilter],
+  );
+  const indSetLc = useMemo(
+    () => (industryFilter.length ? new Set(industryFilter.map((i) => i.toLowerCase())) : null),
+    [industryFilter],
+  );
+
+  // Account names that survive the active industry filter — used to narrow
+  // the Position dropdown.
+  const industryAllowedAccountNamesLc = useMemo(() => {
+    if (!indSetLc) return null;
     const s = new Set<string>();
-    for (const a of scopedAccounts) if (a.industry) s.add(a.industry);
-    return Array.from(s).sort();
-  }, [scopedAccounts]);
-  const positionOptions = useMemo(() => {
-    const s = new Set<string>();
-    const namesLower = new Set(scopedAccounts.map((a) => a.account_name.toLowerCase()));
-    for (const c of scopedContacts) {
-      if (!c.position) continue;
-      if (c.company_name && namesLower.has(c.company_name.toLowerCase())) {
-        s.add(c.position);
+    for (const a of scopedAccounts) {
+      if (a.industry && indSetLc.has(a.industry.toLowerCase())) {
+        s.add(a.account_name.toLowerCase());
       }
     }
+    return s;
+  }, [scopedAccounts, indSetLc]);
+
+  // Account names that have at least one contact matching the active
+  // position filter — used to narrow the Industry dropdown.
+  const positionAllowedAccountNamesLc = useMemo(() => {
+    if (!posSetLc) return null;
+    const s = new Set<string>();
+    for (const c of scopedContacts) {
+      if (!c.position || !c.company_name) continue;
+      if (posSetLc.has(c.position.toLowerCase())) s.add(c.company_name.toLowerCase());
+    }
+    return s;
+  }, [scopedContacts, posSetLc]);
+
+  const industryOptions = useMemo(() => {
+    const s = new Set<string>();
+    for (const a of scopedAccounts) {
+      if (!a.industry) continue;
+      if (positionAllowedAccountNamesLc && !positionAllowedAccountNamesLc.has(a.account_name.toLowerCase())) continue;
+      s.add(a.industry);
+    }
+    // Keep currently-selected industries visible even when they no longer match.
+    for (const i of industryFilter) s.add(i);
     return Array.from(s).sort();
-  }, [scopedAccounts, scopedContacts]);
+  }, [scopedAccounts, positionAllowedAccountNamesLc, industryFilter]);
+
+  const positionOptions = useMemo(() => {
+    const s = new Set<string>();
+    const allNamesLc = new Set(scopedAccounts.map((a) => a.account_name.toLowerCase()));
+    for (const c of scopedContacts) {
+      if (!c.position || !c.company_name) continue;
+      const nameLc = c.company_name.toLowerCase();
+      if (!allNamesLc.has(nameLc)) continue;
+      if (industryAllowedAccountNamesLc && !industryAllowedAccountNamesLc.has(nameLc)) continue;
+      s.add(c.position);
+    }
+    // Keep currently-selected positions visible even when they no longer match.
+    for (const p of positionFilter) s.add(p);
+    return Array.from(s).sort();
+  }, [scopedAccounts, scopedContacts, industryAllowedAccountNamesLc, positionFilter]);
 
   // filtered list (industry + position + search)
   const filteredAccounts = useMemo(() => {
@@ -276,8 +329,8 @@ export function AddAudienceModal({
   const totalScopedContacts = scopedContacts.length;
   const selectedAccountsCount = selectedAccountIds.size;
   const selectedContactsCount = selectedContactIds.size;
-  const existingAccountSet = useMemo(() => new Set(existingAccountIds), [existingAccountKey]);
-  const existingContactSet = useMemo(() => new Set(existingContactIds), [existingContactKey]);
+  const existingAccountSet = useMemo(() => new Set(existingAccountIds), [existingAccountIds.join(",")]);
+  const existingContactSet = useMemo(() => new Set(existingContactIds), [existingContactIds.join(",")]);
   const accountsToAdd = [...selectedAccountIds].filter((id) => !existingAccountSet.has(id));
   const accountsToRemove = [...existingAccountSet].filter((id) => !selectedAccountIds.has(id));
   const contactsToAdd = [...selectedContactIds].filter((id) => !existingContactSet.has(id));
@@ -384,15 +437,15 @@ export function AddAudienceModal({
               </div>
             </div>
             <MultiSelectChips
-              label="Industry"
-              placeholder="Any industry"
+              label={posSetLc ? `Industry (${industryOptions.length})` : "Industry"}
+              placeholder={posSetLc && industryOptions.length === 0 ? "No industries match position filter" : "Any industry"}
               options={industryOptions}
               values={industryFilter}
               onChange={setIndustryFilter}
             />
             <MultiSelectChips
-              label="Position"
-              placeholder="Any position"
+              label={indSetLc ? `Position (${positionOptions.length})` : "Position"}
+              placeholder={indSetLc && positionOptions.length === 0 ? "No positions match industry filter" : "Any position"}
               options={positionOptions}
               values={positionFilter}
               onChange={setPositionFilter}
@@ -432,7 +485,7 @@ export function AddAudienceModal({
         <div className="flex-1 overflow-y-auto min-h-0 mx-5 my-3 border rounded-md divide-y divide-border">
           {(accountsLoading || contactsLoading) && scopedAccounts.length === 0 ? (
             <div className="flex items-center justify-center py-10 text-xs text-muted-foreground gap-2">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading…
+              <AppLoader variant="inline" /> Loading…
             </div>
           ) : filteredAccounts.length === 0 ? (
             <div className="text-center py-8 space-y-1 text-xs text-muted-foreground">
@@ -563,7 +616,7 @@ export function AddAudienceModal({
               Cancel
             </Button>
             <Button size="sm" onClick={handleApply} disabled={!hasChanges || submitting}>
-              {submitting && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
+              {submitting && <AppLoader variant="inline" className="mr-1" />}
               Apply changes
             </Button>
           </div>

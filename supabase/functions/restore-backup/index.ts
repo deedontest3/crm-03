@@ -1,4 +1,4 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { adminGate } from '../_shared/safety-backup.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -51,36 +51,15 @@ Deno.serve(async (req) => {
   try {
     const supabaseUrl = Deno.env.get('MY_SUPABASE_URL') || Deno.env.get('SUPABASE_URL')!
     const serviceRoleKey = Deno.env.get('MY_SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!
 
-    const authHeader = req.headers.get('Authorization')
-    if (!authHeader) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    const gate = await adminGate(req, supabaseUrl, anonKey, serviceRoleKey)
+    if ('error' in gate) {
+      return new Response(JSON.stringify({ error: gate.error }), {
+        status: gate.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       })
     }
-
-    const userClient = createClient(supabaseUrl, Deno.env.get('SUPABASE_ANON_KEY')!, {
-      global: { headers: { Authorization: authHeader } }
-    })
-    const { data: { user }, error: authError } = await userClient.auth.getUser()
-    if (authError || !user) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      })
-    }
-
-    const adminClient = createClient(supabaseUrl, serviceRoleKey)
-    const { data: roleData } = await adminClient
-      .from('user_roles')
-      .select('role')
-      .eq('user_id', user.id)
-      .single()
-
-    if (roleData?.role !== 'admin') {
-      return new Response(JSON.stringify({ error: 'Admin access required' }), {
-        status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      })
-    }
+    const { user, adminClient } = gate
 
     const { backupId } = await req.json()
     if (!backupId) {
@@ -88,6 +67,19 @@ Deno.serve(async (req) => {
         status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       })
     }
+
+    // Concurrency guard — only one restore may run at a time across all
+    // restore endpoints. Row released in the `finally` at the bottom.
+    const { error: lockErr } = await adminClient
+      .from('backup_restore_locks')
+      .insert({ id: 'singleton', locked_by: user.id })
+    if (lockErr) {
+      return new Response(JSON.stringify({ error: 'Another restore is currently in progress' }), {
+        status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
+    }
+
+    try {
 
     const { data: backup, error: fetchError } = await adminClient
       .from('backups')
@@ -113,8 +105,22 @@ Deno.serve(async (req) => {
 
     const backupContent = JSON.parse(await fileData.text())
     const backupData = backupContent.data
-    if (!backupData) {
+    if (!backupData || typeof backupData !== 'object' || Array.isArray(backupData)) {
       return new Response(JSON.stringify({ error: 'Invalid backup format' }), {
+        status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
+    }
+
+    // Validate the envelope BEFORE deleting anything: every table's payload must
+    // be an array. Previously a malformed entry (e.g. a non-array value) would
+    // pass through, the DELETE phase would still wipe earlier tables, and the
+    // insert would throw mid-run — leaving the database partially emptied while
+    // the response still reported success. Fail fast, before any destructive op.
+    const malformedTables = Object.keys(backupData).filter((t) => !Array.isArray(backupData[t]))
+    if (malformedTables.length > 0) {
+      return new Response(JSON.stringify({
+        error: `Malformed backup: expected an array of rows for each table. Offending table(s): ${malformedTables.join(', ')}`,
+      }), {
         status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       })
     }
@@ -174,47 +180,80 @@ Deno.serve(async (req) => {
     // ═══════════════════════════════════════════════════════════════
     const restoredTables: string[] = []
     let restoredRecords = 0
+    // Collect any delete/insert failures so we can report them instead of
+    // returning success while some tables silently failed to restore.
+    const failures: Array<{ table: string; phase: 'delete' | 'insert'; message: string }> = []
 
-    // Delete existing data in reverse dependency order
+    // Delete existing data in reverse dependency order. Abort on first error
+    // so we don't silently partially-empty the database.
     for (const table of DELETE_ORDER) {
       if (tablesToRestore.includes(table)) {
         const { error } = await adminClient.from(table).delete().not('id', 'is', null)
         if (error) {
           console.error(`Error clearing ${table}:`, error)
+          failures.push({ table, phase: 'delete', message: error.message })
+          break
         }
       }
     }
 
-    // Insert data in correct order
-    for (const table of INSERT_ORDER) {
-      if (!backupData[table] || backupData[table].length === 0) continue
+    // Insert data in correct order — abort on first error.
+    if (failures.length === 0) {
+      for (const table of INSERT_ORDER) {
+        if (!backupData[table] || backupData[table].length === 0) continue
 
-      const records = backupData[table]
-      for (let i = 0; i < records.length; i += 500) {
-        const batch = records.slice(i, i + 500)
-        const { error } = await adminClient.from(table).upsert(batch, { onConflict: 'id' })
-        if (error) {
-          console.error(`Error restoring ${table} batch ${i}:`, error)
+        const records = backupData[table]
+        let hadError = false
+        for (let i = 0; i < records.length; i += 500) {
+          const batch = records.slice(i, i + 500)
+          const { error } = await adminClient.from(table).upsert(batch, { onConflict: 'id' })
+          if (error) {
+            console.error(`Error restoring ${table} batch ${i}:`, error)
+            failures.push({ table, phase: 'insert', message: error.message })
+            hadError = true
+            break
+          }
         }
+        if (hadError) break
+        restoredTables.push(table)
+        restoredRecords += records.length
       }
-
-      restoredTables.push(table)
-      restoredRecords += records.length
     }
 
     // Also restore any tables in the backup that aren't in INSERT_ORDER
-    for (const table of tablesToRestore) {
-      if (INSERT_ORDER.includes(table) || !backupData[table]?.length) continue
-      const records = backupData[table]
-      for (let i = 0; i < records.length; i += 500) {
-        const batch = records.slice(i, i + 500)
-        const { error } = await adminClient.from(table).upsert(batch, { onConflict: 'id' })
-        if (error) {
-          console.error(`Error restoring ${table}:`, error)
+    if (failures.length === 0) {
+      for (const table of tablesToRestore) {
+        if (INSERT_ORDER.includes(table) || !backupData[table]?.length) continue
+        const records = backupData[table]
+        let hadError = false
+        for (let i = 0; i < records.length; i += 500) {
+          const batch = records.slice(i, i + 500)
+          const { error } = await adminClient.from(table).upsert(batch, { onConflict: 'id' })
+          if (error) {
+            console.error(`Error restoring ${table}:`, error)
+            failures.push({ table, phase: 'insert', message: error.message })
+            hadError = true
+            break
+          }
         }
+        if (hadError) break
+        restoredTables.push(table)
+        restoredRecords += records.length
       }
-      restoredTables.push(table)
-      restoredRecords += records.length
+    }
+
+    if (failures.length > 0) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Restore aborted — database may be partially restored. Use the pre-restore safety backup to recover.',
+        failedTable: failures[0].table,
+        failures,
+        restoredTables,
+        restoredRecords,
+        safetyBackup: safetyFileName,
+      }), {
+        status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
     }
 
     return new Response(JSON.stringify({
@@ -226,6 +265,11 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     })
 
+    } finally {
+      // Release concurrency lock, always.
+      await adminClient.from('backup_restore_locks').delete().eq('id', 'singleton')
+    }
+
   } catch (error: any) {
     console.error('Restore error:', error)
     return new Response(JSON.stringify({ error: error.message }), {
@@ -233,3 +277,4 @@ Deno.serve(async (req) => {
     })
   }
 })
+

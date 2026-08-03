@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
 
 const defaultColumnWidths: Record<string, number> = {
   checkbox: 48,
   contact_name: 200,
+  linked_deals: 90,
   company_name: 180,
   position: 120,
   email: 180,
@@ -21,14 +22,16 @@ export function useContactColumnWidths() {
   const { user } = useAuth();
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>(defaultColumnWidths);
   const [isLoading, setIsLoading] = useState(true);
+  const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestWidthsRef = useRef<Record<string, number>>(defaultColumnWidths);
 
   useEffect(() => {
-    if (!user) { 
-      setIsLoading(false); 
-      return; 
+    if (!user) {
+      setIsLoading(false);
+      return;
     }
-    
-    const loadPreferences = async () => {
+    let cancelled = false;
+    (async () => {
       try {
         const { data } = await supabase
           .from('column_preferences')
@@ -36,35 +39,45 @@ export function useContactColumnWidths() {
           .eq('user_id', user.id)
           .eq('module', 'contacts_widths')
           .maybeSingle();
-        
+        if (cancelled) return;
         if (data?.column_widths) {
-          setColumnWidths({ ...defaultColumnWidths, ...(data.column_widths as Record<string, number>) });
+          const merged = { ...defaultColumnWidths, ...(data.column_widths as Record<string, number>) };
+          setColumnWidths(merged);
+          latestWidthsRef.current = merged;
         }
       } catch (error) {
-        console.error('Error loading contact column widths:', error);
-      } finally { 
-        setIsLoading(false); 
+        if (!cancelled) console.error('Error loading contact column widths:', error);
+      } finally {
+        if (!cancelled) setIsLoading(false);
       }
-    };
-    loadPreferences();
+    })();
+    return () => { cancelled = true; };
   }, [user]);
 
-  const updateColumnWidth = useCallback(async (field: string, width: number) => {
-    const newWidths = { ...columnWidths, [field]: width };
-    setColumnWidths(newWidths);
-    
+  useEffect(() => () => {
+    if (persistTimer.current) clearTimeout(persistTimer.current);
+  }, []);
+
+  const updateColumnWidth = useCallback((field: string, width: number) => {
+    setColumnWidths((prev) => {
+      const next = { ...prev, [field]: width };
+      latestWidthsRef.current = next;
+      return next;
+    });
     if (!user) return;
-    
-    try {
-      await supabase.from('column_preferences').upsert({
-        user_id: user.id,
-        module: 'contacts_widths',
-        column_widths: newWidths,
-      }, { onConflict: 'user_id,module' });
-    } catch (error) {
-      console.error('Error saving contact column widths:', error);
-    }
-  }, [user, columnWidths]);
+    if (persistTimer.current) clearTimeout(persistTimer.current);
+    persistTimer.current = setTimeout(async () => {
+      try {
+        await supabase.from('column_preferences').upsert({
+          user_id: user.id,
+          module: 'contacts_widths',
+          column_widths: latestWidthsRef.current,
+        }, { onConflict: 'user_id,module' });
+      } catch (error) {
+        console.error('Error saving contact column widths:', error);
+      }
+    }, 250);
+  }, [user]);
 
   return { columnWidths, isLoading, updateColumnWidth, defaultColumnWidths };
 }

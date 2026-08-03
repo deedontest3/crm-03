@@ -1,0 +1,21 @@
+{
+  "custom_components_and_routes": {
+    "src/types/deal.ts": "Added STAGE_LABELS map and getStageLabel() helper for L0–L7 display prefixes.",
+    "src/components/kanban/AnimatedStageHeaders.tsx": "Kanban column headers render getStageLabel(stage).",
+    "src/components/InlineEditCell.tsx": "Stage cell display and stage Select options use getStageLabel.",
+    "src/components/DealsFilterPanel.tsx": "Stage Select options use getStageLabel.",
+    "src/components/DealsAdvancedFilter.tsx": "Stages checkbox labels use getStageLabel.",
+    "src/components/DealForm.tsx": "Header badge, Move-to button, stage selector options, and toast messages use getStageLabel.",
+    "src/components/deal-form/FinalStageForm.tsx": "Card title uses getStageLabel.",
+    "src/components/deal-form/BackwardStageConfirmDialog.tsx": "Title and affected-stages list use getStageLabel.",
+    "src/components/kanban/MissingFieldsDialog.tsx": "Title, description, and submit label use getStageLabel.",
+    "src/components/KanbanBoard.tsx": "Stage toast messages use getStageLabel.",
+    "src/components/ListView.tsx": "Stage toast messages use getStageLabel.",
+    "src/components/dashboard/QuarterDrillDownDialog.tsx": "Drill-down stage column cell uses getStageLabel.",
+    "src/components/YearlyRevenueSummary.tsx": "Annual/quarter target now converted into active display currency via convert(); save + rate-update flows invalidate yearly-revenue-fy and currency-rates React Query caches so KPIs refresh without reload.",
+    "src/components/dashboard/FixedRateBanner.tsx": "After upserting fixed rates, invalidates currency-rates cache so useCurrencyRates picks up new values immediately.",
+    "walkthrough.md": "Documented the L0–L7 stage label scheme and the Annual Target currency conversion behavior.",
+    "dependency_manifest.json": "This registry."
+  }
+}
+

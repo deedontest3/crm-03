@@ -5,11 +5,11 @@ import { useAuth } from '@/hooks/useAuth';
 import { useThemePreferences } from '@/hooks/useThemePreferences';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { Loader2, User, Shield, Bell } from 'lucide-react';
+import { User, Shield, Bell } from "lucide-react";
 import ProfileSection from './account/ProfileSection';
-import EmailSignatureCard from './account/EmailSignatureCard';
 import SecuritySection from './account/SecuritySection';
 import NotificationsSection from './account/NotificationsSection';
+import { AppLoader } from "@/components/ui/loader";
 
 interface ProfileData {
   full_name: string;
@@ -212,7 +212,7 @@ const AccountSettingsPage = () => {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <AppLoader variant="inline" />
       </div>
     );
   }
@@ -250,16 +250,11 @@ const AccountSettingsPage = () => {
           {hasUnsavedChanges() && (
             <div className="flex justify-end">
               <Button onClick={handleSaveProfile} disabled={saving}>
-                {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {saving && <AppLoader variant="inline" className="mr-2" />}
                 Save Profile
               </Button>
             </div>
           )}
-          <EmailSignatureCard
-            userId={user?.id || ''}
-            fullName={profile.full_name}
-            email={profile.email}
-          />
         </TabsContent>
 
         <TabsContent value="security" className="mt-6">

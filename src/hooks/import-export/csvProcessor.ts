@@ -4,6 +4,8 @@ import { CSVParser } from '@/utils/csvParser';
 import { createHeaderMapper } from './headerMapper';
 import { createRecordValidator } from './recordValidator';
 import { createDuplicateChecker } from './duplicateChecker';
+import { runWithConcurrency } from './concurrentBatch';
+
 
 export interface ProcessingOptions {
   tableName: string;
@@ -104,8 +106,12 @@ export class CSVProcessor {
       errors: []
     };
 
-    for (const row of rows) {
-      try {
+    // Run rows in bounded-concurrency chunks (concurrency 8) rather than
+    // strictly serial awaits — trims minutes off multi-thousand-row imports
+    // while keeping per-row error attribution.
+    const settled = await runWithConcurrency(
+      rows,
+      async (row) => {
         // Convert row to object
         const rowObj: Record<string, any> = {};
         headers.forEach((header, index) => {
@@ -122,18 +128,13 @@ export class CSVProcessor {
         // Validate record
         const isValid = this.recordValidator(rowObj);
         if (!isValid) {
-          result.errorCount++;
-          result.errors.push(`Row validation failed for record`);
-          continue;
+          return { kind: 'error' as const, message: 'Row validation failed for record' };
         }
 
         // Check for duplicates
         const isDuplicate = await this.duplicateChecker(rowObj);
-        
         if (isDuplicate) {
-          result.duplicateCount++;
-          console.log('Duplicate record found, skipping');
-          continue;
+          return { kind: 'duplicate' as const };
         }
 
         // Insert new record
@@ -142,17 +143,31 @@ export class CSVProcessor {
           .insert([rowObj]);
 
         if (insertError) {
-          result.errorCount++;
-          result.errors.push(`Insert failed: ${insertError.message}`);
-        } else {
-          result.successCount++;
+          return { kind: 'error' as const, message: `Insert failed: ${insertError.message}` };
         }
+        return { kind: 'success' as const };
+      },
+      { concurrency: 8 }
+    );
 
-      } catch (error: any) {
+    for (const s of settled) {
+      if (s.ok === false) {
         result.errorCount++;
-        result.errors.push(`Row processing error: ${error.message}`);
+        result.errors.push(`Row processing error: ${s.error.message}`);
+        continue;
+      }
+      const v = s.value;
+      switch (v.kind) {
+        case 'success': result.successCount++; break;
+        case 'duplicate': result.duplicateCount++; break;
+        case 'error':
+          result.errorCount++;
+          result.errors.push(v.message);
+          break;
       }
     }
+
+
 
     return result;
   }

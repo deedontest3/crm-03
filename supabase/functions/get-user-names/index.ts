@@ -1,172 +1,77 @@
-
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.52.0";
+import { requireUser } from "../_shared/auth-gate.ts";
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-}
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
 
 Deno.serve(async (req) => {
-  // Handle CORS preflight requests
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
-  }
+  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    console.log('get-user-names: Function called');
-    
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    
-    console.log('get-user-names: Environment check - URL exists:', !!supabaseUrl);
-    console.log('get-user-names: Environment check - Service key exists:', !!supabaseServiceKey);
-    
-    if (!supabaseUrl || !supabaseServiceKey) {
-      console.error('get-user-names: Missing environment variables');
-      return new Response(
-        JSON.stringify({ error: 'Server configuration error' }),
-        { 
-          status: 500, 
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-        }
-      );
-    }
+    const gate = await requireUser(req);
+    if ("response" in gate) return gate.response;
 
-    // Create a Supabase client with service role key for admin access
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    const requestBody = await req.json();
-    const { userIds, getAllUsers } = requestBody;
-    
-    console.log('get-user-names: Request params:', { userIds, getAllUsers });
-
-    // If getAllUsers is true, fetch all users from auth table
-    if (getAllUsers) {
-      try {
-        const { data: authData, error: authError } = await supabase.auth.admin.listUsers();
-        
-        console.log('get-user-names: Fetching all users, count:', authData?.users?.length || 0);
-
-        if (authError) {
-          console.error('get-user-names: Error fetching all users:', authError);
-          throw authError;
-        }
-
-        const users = authData?.users?.map(user => ({
-          id: user.id,
-          email: user.email,
-          user_metadata: user.user_metadata || {}
-        })) || [];
-
-        return new Response(
-          JSON.stringify({ users }),
-          { 
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-          }
-        );
-      } catch (error) {
-        console.error('get-user-names: Error fetching all users:', error);
-        return new Response(
-          JSON.stringify({ error: 'Failed to fetch users' }),
-          { 
-            status: 500, 
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-          }
-        );
-      }
-    }
-
-    // Original functionality for specific user IDs
-    if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-      console.log('get-user-names: No valid user IDs provided');
-      return new Response(
-        JSON.stringify({ error: 'No valid user IDs provided' }),
-        { 
-          status: 400, 
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-        }
-      );
-    }
-
-    const userDisplayNames: Record<string, string> = {};
-
-    // Try profiles table first (this is more reliable)
-    console.log('get-user-names: Fetching from profiles table');
-    const { data: profiles, error: profilesError } = await supabase
-      .from('profiles')
-      .select('id, full_name, "Email ID"')
-      .in('id', userIds);
-
-    console.log('get-user-names: Profiles result:', { 
-      count: profiles?.length || 0, 
-      error: profilesError 
-    });
-
-    if (!profilesError && profiles) {
-      profiles.forEach((profile: any) => {
-        const displayName = profile.full_name || profile["Email ID"] || "User";
-        userDisplayNames[profile.id] = displayName;
-        console.log(`get-user-names: Set display name from profiles for ${profile.id}: ${displayName}`);
-      });
-    }
-
-    // For any missing users, try auth.users as fallback
-    const missingIds = userIds.filter((id: string) => !userDisplayNames[id]);
-    
-    if (missingIds.length > 0) {
-      console.log('get-user-names: Fetching missing users from auth.users:', missingIds);
-      
-      try {
-        const { data: authData, error: authError } = await supabase.auth.admin.listUsers();
-        
-        console.log('get-user-names: Auth users result:', { 
-          count: authData?.users?.length || 0, 
-          error: authError 
-        });
-
-        if (!authError && authData?.users) {
-          authData.users.forEach((user: any) => {
-            if (missingIds.includes(user.id)) {
-              const displayName = user.user_metadata?.full_name || 
-                               user.user_metadata?.display_name || 
-                               user.email ||
-                               "User";
-              userDisplayNames[user.id] = displayName;
-              console.log(`get-user-names: Set display name from auth for ${user.id}: ${displayName}`);
-            }
-          });
-        }
-      } catch (authError) {
-        console.error('get-user-names: Auth query failed:', authError);
-      }
-    }
-
-    // Set fallback for any still missing users
-    userIds.forEach((id: string) => {
-      if (!userDisplayNames[id]) {
-        userDisplayNames[id] = "Unknown User";
-        console.log(`get-user-names: Set fallback name for ${id}: Unknown User`);
-      }
-    });
-
-    console.log('get-user-names: Final result:', userDisplayNames);
-
-    return new Response(
-      JSON.stringify({ userDisplayNames }),
-      { 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-      }
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
 
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('get-user-names: Function error:', error);
+    const body = await req.json().catch(() => ({}));
+    const { userIds } = body ?? {};
+
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return new Response(
+        JSON.stringify({ error: "userIds (array) is required" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    // Restrict lookup to ids the caller can already see through the profiles
+    // table (RLS scoped) plus their own id. We NEVER return email — display
+    // name only — to keep this endpoint from being a directory-scraping tool.
+    const requested: string[] = Array.from(
+      new Set(userIds.filter((v: unknown) => typeof v === "string" && v.length > 0)),
+    );
+
+    // Query profiles as a SERVICE client but respect the "profiles RLS view of
+    // the caller" by re-querying with the caller's JWT for the id-visibility
+    // set. If profiles RLS grants a row, we include it.
+    const callerClient = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_ANON_KEY")!,
+      { global: { headers: { Authorization: `Bearer ${gate.token}` } } },
+    );
+    const { data: visibleProfiles } = await callerClient
+      .from("profiles")
+      .select("id, full_name")
+      .in("id", requested);
+
+    const displayNames: Record<string, string> = {};
+    // Always include the caller's own id.
+    displayNames[gate.userId] = displayNames[gate.userId] || "You";
+
+    (visibleProfiles || []).forEach((p: { id: string; full_name: string | null }) => {
+      displayNames[p.id] = p.full_name || "User";
+    });
+
+    // Any id the caller asked for but can't see gets "Unknown User" — never
+    // reveal existence beyond what profiles RLS already allows.
+    requested.forEach((id) => {
+      if (!displayNames[id]) displayNames[id] = "Unknown User";
+    });
+
     return new Response(
-      JSON.stringify({ error: 'Internal server error', details: errorMessage }),
-      { 
-        status: 500, 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-      }
+      JSON.stringify({ userDisplayNames: displayNames }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("get-user-names error:", error);
+    return new Response(
+      JSON.stringify({ error: "Internal server error", details: message }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
 });

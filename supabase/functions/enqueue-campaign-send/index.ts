@@ -55,6 +55,8 @@ interface Body {
   scheduled_at?: string | null;
   // Defaults to 3 days. Set to 0 to disable the dup-send window check.
   dup_window_days?: number;
+  // Admin-only: bypass the bounce-rate guardrail when needed.
+  override_bounce_guardrail?: boolean;
 }
 
 function bad(status: number, error: string) {
@@ -127,6 +129,27 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ── B7: bounce-rate guardrail (industry standard ≥5% blocks new sends).
+    // Allows admin override via body.override_bounce_guardrail = true.
+    if (body.override_bounce_guardrail !== true) {
+      const { data: bRate } = await userClient.rpc("recent_bounce_rate", {
+        _campaign_id: body.campaign_id,
+        _last_n: 100,
+      });
+      const rate = Number(bRate ?? 0);
+      if (rate >= 0.05) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: `Bounce rate over the last 100 sends is ${(rate * 100).toFixed(1)}%. New sends are blocked above 5% to protect deliverability. An admin can override.`,
+            errorCode: "BOUNCE_RATE_EXCEEDED",
+            bounce_rate: rate,
+          }),
+          { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+    }
+
     // ── A2: server-side duplicate-send window guard ────────────────────
     // Reject any items that already received a successful email in the
     // configured lookback window. This closes the race-condition where two
@@ -146,6 +169,38 @@ Deno.serve(async (req) => {
         filteredItems = body.items.filter((it) => !recentSet.has(it.contact_id));
         skippedDupCount = body.items.length - filteredItems.length;
       }
+    }
+
+    // ── B8: suppression-list filter (unsubscribed / bounced / manual).
+    // Filter at enqueue time, not just at send-time, so jobs do not queue
+    // doomed items that just become noise in `failed_items`.
+    let skippedSuppressionCount = 0;
+    if (filteredItems.length > 0) {
+      const emails = Array.from(
+        new Set(filteredItems.map((i) => (i.recipient_email || "").toLowerCase()).filter(Boolean)),
+      );
+      const contactIds = Array.from(new Set(filteredItems.map((i) => i.contact_id)));
+      const { data: suppRows } = await userClient
+        .from("campaign_suppression_list")
+        .select("email, contact_id, campaign_id")
+        .or(`campaign_id.is.null,campaign_id.eq.${body.campaign_id}`);
+      const suppEmails = new Set<string>();
+      const suppContacts = new Set<string>();
+      for (const r of (suppRows || []) as { email: string | null; contact_id: string | null }[]) {
+        if (r.email) suppEmails.add(r.email.toLowerCase());
+        if (r.contact_id) suppContacts.add(r.contact_id);
+      }
+      if (suppEmails.size > 0 || suppContacts.size > 0) {
+        const before = filteredItems.length;
+        filteredItems = filteredItems.filter(
+          (it) =>
+            !suppEmails.has((it.recipient_email || "").toLowerCase()) &&
+            !suppContacts.has(it.contact_id),
+        );
+        skippedSuppressionCount = before - filteredItems.length;
+      }
+      // Reference contactIds/emails to satisfy the linter on unused locals.
+      void emails; void contactIds;
     }
 
     // ── Channel coordination: skip contacts that already received a
@@ -171,9 +226,10 @@ Deno.serve(async (req) => {
       return new Response(
         JSON.stringify({
           success: false,
-          error: `No recipients are eligible right now (duplicates: ${skippedDupCount}, same-day cross-channel: ${skippedChannelCount}).`,
+          error: `No recipients are eligible right now (duplicates: ${skippedDupCount}, suppressed: ${skippedSuppressionCount}, same-day cross-channel: ${skippedChannelCount}).`,
           errorCode: "ALL_INELIGIBLE",
           skipped_duplicates: skippedDupCount,
+          skipped_suppression: skippedSuppressionCount,
           skipped_channel_conflict: skippedChannelCount,
         }),
         { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } },
@@ -245,6 +301,7 @@ Deno.serve(async (req) => {
       metadata: {
         total_items: filteredItems.length,
         skipped_duplicates: skippedDupCount,
+        skipped_suppression: skippedSuppressionCount,
         skipped_channel_conflict: skippedChannelCount,
         scheduled_at: body.scheduled_at ?? null,
         correlation_id: correlationId,
@@ -257,6 +314,7 @@ Deno.serve(async (req) => {
         job_id: job.id,
         queued_count: filteredItems.length,
         skipped_duplicates: skippedDupCount,
+        skipped_suppression: skippedSuppressionCount,
         skipped_channel_conflict: skippedChannelCount,
         scheduled_at: body.scheduled_at ?? null,
       }),

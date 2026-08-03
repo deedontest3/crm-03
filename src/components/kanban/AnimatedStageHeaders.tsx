@@ -1,5 +1,5 @@
-import { Fragment, useMemo } from "react";
-import { DealStage, STAGE_COLORS, STAGE_BG_COLORS } from "@/types/deal";
+import { useMemo } from "react";
+import { DealStage, STAGE_COLORS, STAGE_BG_COLORS, getStageLabel } from "@/types/deal";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Plus } from "lucide-react";
@@ -81,7 +81,7 @@ export function AnimatedStageHeaders({
         const isActiveStage = stage === expandedStage;
         
         return (
-          <Fragment key={stage}>
+          <div key={stage} className="contents">
             <div
               className={cn(
                 'stage-header-item p-2 rounded-lg border transition-all duration-300',
@@ -99,7 +99,7 @@ export function AnimatedStageHeaders({
                       className="transition-colors flex-shrink-0 h-3 w-3"
                     />
                   )}
-                  <h3 className="font-semibold text-sm truncate text-foreground">{stage}</h3>
+                  <h3 className="font-semibold text-sm truncate text-foreground">{getStageLabel(stage)}</h3>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
                   <span className="text-xs font-medium whitespace-nowrap">
@@ -144,7 +144,7 @@ export function AnimatedStageHeaders({
                   </div>
               </div>
             )}
-          </Fragment>
+          </div>
         );
       })}
     </div>

@@ -134,7 +134,7 @@ export function CampaignAudienceTable({ campaignId, isCampaignEnded, selectedReg
         .select("id, account_id, created_at, accounts(account_name, industry, region, country, website, phone)")
         .eq("campaign_id", campaignId);
       if (error) throw error;
-      return data;
+      return (data ?? []) as any[];
     },
     staleTime: 0,
     refetchOnMount: "always",
@@ -149,7 +149,7 @@ export function CampaignAudienceTable({ campaignId, isCampaignEnded, selectedReg
         .select("id, contact_id, account_id, stage, disposition, engagement_score, attempt_count, last_activity_at, contacts(contact_name, email, position, linkedin, industry, phone_no)")
         .eq("campaign_id", campaignId);
       if (error) throw error;
-      return data;
+      return (data ?? []) as any[];
     },
     staleTime: 0,
     refetchOnMount: "always",

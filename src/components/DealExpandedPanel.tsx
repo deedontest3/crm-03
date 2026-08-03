@@ -1,26 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import {
-  X,
-  Plus,
-  Clock,
-  History,
-  ListTodo,
-  ChevronDown,
-  ChevronRight,
-  Eye,
-  ArrowRight,
-  Check,
-  MessageSquarePlus,
-  Phone,
-  Mail,
-  Calendar,
-  FileText,
-  User,
-  MoreHorizontal,
-  Handshake,
-  AlertTriangle,
-  Trash2 } from
-"lucide-react";
+import { X, Plus, Clock, History, ListTodo, ChevronDown, ChevronRight, Eye, ArrowRight, Check, MessageSquarePlus, Phone, Mail, Calendar, FileText, User, MoreHorizontal, Handshake, AlertTriangle, Trash2 } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -62,6 +41,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useCRUDAudit } from "@/hooks/useCRUDAudit";
 import { Contact } from "@/components/ContactSearchableDropdown";
 import { Users } from "lucide-react";
+import { AppLoader } from "@/components/ui/loader";
 
 interface DealExpandedPanelProps {
   deal: Deal;
@@ -96,9 +76,9 @@ const LOG_TYPES = [{ value: "Note", label: "Note", icon: FileText }] as const;
 
 type LogType = (typeof LOG_TYPES)[number]["value"];
 
-// Format date/time for table display: HH:mm dd-MM-yy
+// Format date/time for table display: dd/MM/yyyy HH:mm
 const formatHistoryDateTime = (date: Date): string => {
-  return format(date, "HH:mm dd-MM-yy");
+  return format(date, "dd/MM/yyyy HH:mm");
 };
 
 // Format a value for display
@@ -455,7 +435,7 @@ const StakeholdersSection = ({ deal, queryClient }: {deal: Deal;queryClient: Ret
 
     const { data, error } = await supabase
       .from("contacts")
-      .insert({ contact_name: name, company_name: companyName, created_by: user?.id })
+      .insert({ contact_name: name, company_name: companyName, account_id: dealAccountId, created_by: user?.id })
       .select("id, contact_name, company_name, position, email, phone_no, region, contact_owner, contact_source, industry, linkedin, website")
       .single();
     if (error || !data) {
@@ -1063,7 +1043,7 @@ export const DealExpandedPanel = ({
               <div className="flex-1 min-h-0 overflow-y-auto" ref={historyScrollRef}>
                 {isLoading ?
                 <div className="flex items-center justify-center py-6">
-                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary"></div>
+                    <AppLoader variant="panel" />
                   </div> :
 
                 <Table>
@@ -1160,7 +1140,7 @@ export const DealExpandedPanel = ({
               <div className="flex-1 min-h-0 overflow-y-auto" ref={actionItemsScrollRef}>
                 {isLoading ?
                 <div className="flex items-center justify-center py-6">
-                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary"></div>
+                    <AppLoader variant="panel" />
                   </div> :
 
                 <Table>
@@ -1262,7 +1242,7 @@ export const DealExpandedPanel = ({
 
 
                         <button onClick={() => setEditingDateId(item.id)} className="hover:underline text-[11px]">
-                                  {item.due_date ? format(new Date(item.due_date), "dd-MM-yy") : "—"}
+                                  {item.due_date ? format(new Date(item.due_date), "dd/MM/yyyy") : "—"}
                                 </button>
                         }
                             </TableCell>

@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Plus, CheckSquare, Trash2, Check, Pencil } from "lucide-react";
+import { Plus, CheckSquare, Trash2, Check, Pencil, Mail } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -17,9 +17,11 @@ import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { useUserDisplayNames } from "@/hooks/useUserDisplayNames";
 import { useCRUDAudit } from "@/hooks/useCRUDAudit";
+import { useSearchParams } from "react-router-dom";
 
 interface Props {
   campaignId: string;
+  onOpenThread?: (threadKey: string) => void;
 }
 
 const priorityColors: Record<string, string> = {
@@ -28,9 +30,10 @@ const priorityColors: Record<string, string> = {
   Low: "bg-muted text-muted-foreground",
 };
 
-export function CampaignActionItems({ campaignId }: Props) {
+export function CampaignActionItems({ campaignId, onOpenThread }: Props) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
+  const [, setSearchParams] = useSearchParams();
   const { logCreate, logUpdate, logDelete } = useCRUDAudit();
   const [showInlineForm, setShowInlineForm] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
@@ -59,10 +62,10 @@ export function CampaignActionItems({ campaignId }: Props) {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("campaign_contacts")
-        .select("contact_id, account_id, contacts(contact_name, email, phone_no)")
+        .select("contact_id, account_id, accounts(account_name), contacts(contact_name, email, phone_no, company_name, account_id)")
         .eq("campaign_id", campaignId);
       if (error) throw error;
-      return data;
+      return (data ?? []) as any[];
     },
   });
 
@@ -74,7 +77,7 @@ export function CampaignActionItems({ campaignId }: Props) {
         .select("account_id, accounts(account_name)")
         .eq("campaign_id", campaignId);
       if (error) throw error;
-      return data;
+      return (data ?? []) as any[];
     },
   });
 
@@ -82,7 +85,21 @@ export function CampaignActionItems({ campaignId }: Props) {
   const ownerIds = [...new Set(actionItems.map((i) => i.assigned_to).filter(Boolean))] as string[];
   const { displayNames } = useUserDisplayNames(ownerIds);
 
-  // Listen for "Add Task" events from Contacts tab
+  const getContactAccountId = (cc: any) => cc?.account_id || cc?.contacts?.account_id || "";
+  const getAccountNameFor = (contactId?: string, accountId?: string) => {
+    const cc = contactId ? campaignContacts.find((c: any) => c.contact_id === contactId) : null;
+    const resolvedAccountId = accountId || getContactAccountId(cc);
+    const account = resolvedAccountId ? campaignAccounts.find((ca: any) => ca.account_id === resolvedAccountId) : null;
+    return account?.accounts?.account_name || cc?.accounts?.account_name || cc?.contacts?.company_name || "";
+  };
+  const getAccountNameForContactName = (contactName: string | null) => {
+    const normalized = contactName?.trim().toLowerCase();
+    if (!normalized) return "";
+    const cc = campaignContacts.find((c: any) => c.contacts?.contact_name?.trim().toLowerCase() === normalized);
+    return cc ? getAccountNameFor(cc.contact_id, cc.account_id) : "";
+  };
+
+  // Listen for "Add Action Item" events from Contacts tab
   useEffect(() => {
     const handler = (e: any) => {
       const { contactId, accountId } = e.detail || {};
@@ -99,7 +116,7 @@ export function CampaignActionItems({ campaignId }: Props) {
 
   const handleContactChange = (contactId: string) => {
     const cc = campaignContacts.find((c: any) => c.contact_id === contactId);
-    const accountId = cc?.account_id || "";
+    const accountId = getContactAccountId(cc);
     setForm({ ...form, contact_id: contactId, account_id: accountId });
   };
 
@@ -107,7 +124,7 @@ export function CampaignActionItems({ campaignId }: Props) {
     if (!form.title.trim()) return;
     let enrichedDescription = form.description || "";
     const contactName = campaignContacts.find((cc: any) => cc.contact_id === form.contact_id)?.contacts?.contact_name;
-    const accountName = campaignAccounts.find((ca: any) => ca.account_id === form.account_id)?.accounts?.account_name;
+    const accountName = getAccountNameFor(form.contact_id, form.account_id);
     const metaParts = [];
     if (contactName) metaParts.push(`Contact: ${contactName}`);
     if (accountName) metaParts.push(`Account: ${accountName}`);
@@ -127,7 +144,7 @@ export function CampaignActionItems({ campaignId }: Props) {
     await logCreate('action_items', '', { title: form.title, module_type: 'campaigns', campaign_id: campaignId });
     setShowInlineForm(false);
     setForm({ title: "", description: "", priority: "Medium", due_date: "", contact_id: "", account_id: "" });
-    toast({ title: "Task created" });
+    toast({ title: "Action item created" });
   };
 
   const updateStatus = async (id: string, status: string) => {
@@ -146,7 +163,7 @@ export function CampaignActionItems({ campaignId }: Props) {
     queryClient.invalidateQueries({ queryKey: ["action-items"] });
     await logDelete('action_items', deleteConfirm, item);
     setDeleteConfirm(null);
-    toast({ title: "Task deleted" });
+    toast({ title: "Action item deleted" });
   };
 
   const openEdit = (item: any) => {
@@ -170,7 +187,7 @@ export function CampaignActionItems({ campaignId }: Props) {
     queryClient.invalidateQueries({ queryKey: ["campaign-action-items", campaignId] });
     queryClient.invalidateQueries({ queryKey: ["action-items"] });
     setEditItem(null);
-    toast({ title: "Task updated" });
+    toast({ title: "Action item updated" });
   };
 
   const today = new Date().toISOString().split("T")[0];
@@ -185,6 +202,23 @@ export function CampaignActionItems({ campaignId }: Props) {
     if (!desc) return null;
     const match = desc.match(/Account: (.+?)(\s*\||\s*$)/);
     return match ? match[1] : null;
+  };
+  const getThreadKeyFromDescription = (desc: string | null) => {
+    if (!desc) return null;
+    const match = desc.match(/\[thread:([^\]]+)\]/);
+    return match ? match[1] : null;
+  };
+  const openThread = (threadKey: string) => {
+    if (onOpenThread) {
+      onOpenThread(threadKey);
+      return;
+    }
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("tab", "monitoring");
+      next.set("thread", threadKey);
+      return next;
+    }, { replace: false });
   };
 
   // Filtered items
@@ -224,7 +258,7 @@ export function CampaignActionItems({ campaignId }: Props) {
               </Select>
             )}
             <Button size="sm" onClick={() => setShowInlineForm(!showInlineForm)}>
-              <Plus className="h-4 w-4 mr-1" /> Add Task
+              <Plus className="h-4 w-4 mr-1" /> Add Action Item
             </Button>
           </div>
         </CardHeader>
@@ -235,7 +269,7 @@ export function CampaignActionItems({ campaignId }: Props) {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label className="text-xs">Title *</Label>
-                  <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Task title..." className="h-8 text-sm" />
+                  <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Action item title..." className="h-8 text-sm" />
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs">Contact</Label>
@@ -286,7 +320,7 @@ export function CampaignActionItems({ campaignId }: Props) {
               </div>
               <div className="flex gap-2 justify-end">
                 <Button variant="outline" size="sm" onClick={() => setShowInlineForm(false)}>Cancel</Button>
-                <Button size="sm" onClick={handleCreate} disabled={!form.title.trim()}>Save Task</Button>
+                <Button size="sm" onClick={handleCreate} disabled={!form.title.trim()}>Save Action Item</Button>
               </div>
             </div>
           )}
@@ -294,11 +328,11 @@ export function CampaignActionItems({ campaignId }: Props) {
           {filtered.length === 0 && !showInlineForm ? (
             <div className="text-center py-8">
               <p className="text-sm text-muted-foreground">
-                {actionItems.length === 0 ? "No tasks yet. Create follow-up tasks for this campaign." : "No tasks match the selected filters."}
+                {actionItems.length === 0 ? "No action items yet. Create follow-up action items for this campaign." : "No action items match the selected filters."}
               </p>
               {actionItems.length === 0 && (
                 <Button variant="outline" size="sm" className="mt-3" onClick={() => setShowInlineForm(true)}>
-                  <Plus className="h-4 w-4 mr-1" /> Create your first task
+                  <Plus className="h-4 w-4 mr-1" /> Create your first action item
                 </Button>
               )}
             </div>
@@ -313,17 +347,24 @@ export function CampaignActionItems({ campaignId }: Props) {
                   <TableHead>Priority</TableHead>
                   <TableHead>Due Date</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Email Thread</TableHead>
                   <TableHead className="w-[120px]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((item) => (
+                {filtered.map((item) => {
+                  const threadKey = getThreadKeyFromDescription(item.description);
+                  const contactName = getContactFromDescription(item.description);
+                  const accountName = getAccountFromDescription(item.description) || getAccountNameForContactName(contactName);
+                  return (
                   <TableRow key={item.id} className={cn(isOverdue(item) && "border-l-4 border-l-yellow-500")}>
                     <TableCell>
-                      <p className="font-medium text-sm">{item.title}</p>
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium text-sm">{item.title}</p>
+                      </div>
                     </TableCell>
-                    <TableCell className="text-sm">{getContactFromDescription(item.description) || "—"}</TableCell>
-                    <TableCell className="text-sm">{getAccountFromDescription(item.description) || "—"}</TableCell>
+                    <TableCell className="text-sm">{contactName || "—"}</TableCell>
+                    <TableCell className="text-sm">{accountName || "—"}</TableCell>
                     <TableCell className="text-sm">{item.assigned_to ? displayNames[item.assigned_to] || "—" : "—"}</TableCell>
                     <TableCell>
                       <Badge className={priorityColors[item.priority]} variant="secondary">{item.priority}</Badge>
@@ -342,6 +383,22 @@ export function CampaignActionItems({ campaignId }: Props) {
                       </Select>
                     </TableCell>
                     <TableCell>
+                      {threadKey ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 gap-1 text-xs"
+                          title="Open email thread"
+                          onClick={() => openThread(threadKey)}
+                        >
+                          <Mail className="h-3.5 w-3.5 text-primary" />
+                          <span className="text-primary">Open</span>
+                        </Button>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
                       <div className="flex items-center gap-1">
                         {item.status !== "Done" && (
                           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => updateStatus(item.id, "Done")} title="Mark Done">
@@ -357,7 +414,8 @@ export function CampaignActionItems({ campaignId }: Props) {
                       </div>
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           )}
@@ -368,7 +426,7 @@ export function CampaignActionItems({ campaignId }: Props) {
       <AlertDialog open={!!deleteConfirm} onOpenChange={(open) => !open && setDeleteConfirm(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Task</AlertDialogTitle>
+            <AlertDialogTitle>Delete Action Item</AlertDialogTitle>
             <AlertDialogDescription>Are you sure? This cannot be undone.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -378,10 +436,10 @@ export function CampaignActionItems({ campaignId }: Props) {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Edit Task Modal */}
+      {/* Edit Action Item Modal */}
       <Dialog open={!!editItem} onOpenChange={(open) => !open && setEditItem(null)}>
         <DialogContent className="sm:max-w-[425px]">
-          <DialogHeader><DialogTitle>Edit Task</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Edit Action Item</DialogTitle></DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="space-y-2">
               <Label>Title *</Label>

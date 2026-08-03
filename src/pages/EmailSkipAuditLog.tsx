@@ -4,7 +4,7 @@ import { ArrowLeft, ShieldAlert } from "lucide-react";
 import { useUserRole } from "@/hooks/useUserRole";
 import EmailSkipAuditTable from "@/components/settings/EmailSkipAuditTable";
 import { Card, CardContent } from "@/components/ui/card";
-import { Loader2 } from "lucide-react";
+import { AppLoader } from "@/components/ui/loader";
 
 export default function EmailSkipAuditLog() {
   const navigate = useNavigate();
@@ -13,7 +13,7 @@ export default function EmailSkipAuditLog() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <AppLoader variant="inline" />
       </div>
     );
   }

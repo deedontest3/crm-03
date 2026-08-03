@@ -1,0 +1,2 @@
+ALTER TABLE public.deal_documents DROP CONSTRAINT IF EXISTS deal_documents_kind_check;
+ALTER TABLE public.deal_documents ADD CONSTRAINT deal_documents_kind_check CHECK (kind IN ('signed_contract','po','rfq_submitted','proposal','other'));

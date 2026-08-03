@@ -20,7 +20,7 @@ const OUTCOMES = [
   { value: "sent", label: "Sent" },
   { value: "failed", label: "Failed" },
   { value: "skipped", label: "Skipped" },
-  { value: "action_item_created", label: "Action item" },
+  { value: "action_item_created", label: "Action Item" },
   { value: "dry_run_match", label: "Dry-run match" },
 ] as const;
 

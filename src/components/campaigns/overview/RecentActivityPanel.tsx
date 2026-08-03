@@ -49,15 +49,28 @@ const initial = (s?: string) =>
 const statusClass = (s: Item["status"]) => {
   switch (s) {
     case "Replied":
-      return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300";
+      return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-1 ring-emerald-500/20";
     case "Failed":
-      return "bg-destructive/15 text-destructive";
+      return "bg-destructive/15 text-destructive ring-1 ring-destructive/20";
     case "Opened":
-      return "bg-amber-500/15 text-amber-700 dark:text-amber-300";
+      return "bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-1 ring-sky-500/20";
     case "Sent":
-      return "bg-primary/15 text-primary";
+      return "bg-blue-500/15 text-blue-700 dark:text-blue-300 ring-1 ring-blue-500/20";
     default:
-      return "bg-muted text-muted-foreground";
+      return "bg-muted text-muted-foreground ring-1 ring-border";
+  }
+};
+
+const channelTone = (t: Item["type"]) => {
+  switch (t) {
+    case "Email":
+      return { icon: "text-blue-600 dark:text-blue-300", bg: "bg-blue-100 dark:bg-blue-900/40", avatar: "from-blue-200 to-blue-50 dark:from-blue-900/60 dark:to-blue-950/30 text-blue-700 dark:text-blue-200 ring-blue-500/20" };
+    case "Call":
+      return { icon: "text-emerald-600 dark:text-emerald-300", bg: "bg-emerald-100 dark:bg-emerald-900/40", avatar: "from-emerald-200 to-emerald-50 dark:from-emerald-900/60 dark:to-emerald-950/30 text-emerald-700 dark:text-emerald-200 ring-emerald-500/20" };
+    case "LinkedIn":
+      return { icon: "text-indigo-600 dark:text-indigo-300", bg: "bg-indigo-100 dark:bg-indigo-900/40", avatar: "from-indigo-200 to-indigo-50 dark:from-indigo-900/60 dark:to-indigo-950/30 text-indigo-700 dark:text-indigo-200 ring-indigo-500/20" };
+    default:
+      return { icon: "text-muted-foreground", bg: "bg-muted", avatar: "from-muted to-muted text-muted-foreground ring-border" };
   }
 };
 
@@ -178,10 +191,13 @@ export function RecentActivityPanel({
   ].filter(Boolean) as { id: Filter; label: string; count: number }[];
 
   return (
-    <Card className="flex flex-col h-full w-full">
+    <Card className="relative flex flex-col h-full w-full overflow-hidden">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-emerald-500" />
       <CardContent className="p-3 flex flex-col h-full min-h-0">
         <div className="flex items-center gap-2 mb-2">
-          <Inbox className="h-3.5 w-3.5 text-muted-foreground" />
+          <div className="h-5 w-5 rounded-md bg-indigo-500/15 flex items-center justify-center">
+            <Inbox className="h-3 w-3 text-indigo-600 dark:text-indigo-300" />
+          </div>
           <h3 className="text-xs font-semibold uppercase tracking-wider">
             Recent Activity
           </h3>
@@ -200,8 +216,8 @@ export function RecentActivityPanel({
               onClick={() => setFilter(c.id)}
               className={`px-2 py-0.5 rounded-full text-[10px] font-medium border transition-colors ${
                 filter === c.id
-                  ? "bg-primary text-primary-foreground border-primary"
-                  : "bg-background text-muted-foreground border-border hover:border-primary/40"
+                  ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                  : "bg-background text-muted-foreground border-border hover:border-primary/40 hover:text-foreground"
               }`}
             >
               {c.label} <span className="opacity-70">{c.count}</span>
@@ -225,6 +241,7 @@ export function RecentActivityPanel({
                     : i.type === "LinkedIn"
                     ? Linkedin
                     : MessageSquare;
+                const tone = channelTone(i.type);
                 const clickable =
                   (i.type === "Email" && !!i.threadId) ||
                   (i.type === "Call" && !!onOpenCall) ||
@@ -238,16 +255,18 @@ export function RecentActivityPanel({
                   <li
                     key={i.key}
                     onClick={handleClick}
-                    className={`grid grid-cols-[auto_auto_1fr_auto_auto] items-center gap-2 px-2 py-1.5 rounded-md text-[11px] ${
+                    className={`grid grid-cols-[auto_auto_1fr_auto_auto] items-center gap-2 px-2 py-1.5 rounded-md text-[11px] transition-colors ${
                       clickable
-                        ? "cursor-pointer hover:bg-muted/60"
+                        ? "cursor-pointer hover:bg-gradient-to-r hover:from-muted/70 hover:to-muted/20"
                         : "hover:bg-muted/30"
                     }`}
                   >
-                    <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center text-[10px] font-semibold text-muted-foreground shrink-0">
+                    <div className={`h-6 w-6 rounded-full bg-gradient-to-br ${tone.avatar} ring-1 flex items-center justify-center text-[10px] font-semibold shrink-0`}>
                       {initial(i.contactName)}
                     </div>
-                    <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    <div className={`h-5 w-5 rounded-md ${tone.bg} flex items-center justify-center shrink-0`}>
+                      <Icon className={`h-3 w-3 ${tone.icon}`} />
+                    </div>
                     <div className="min-w-0">
                       <p className="truncate font-medium text-foreground">
                         {i.contactName}
@@ -268,7 +287,7 @@ export function RecentActivityPanel({
                       </p>
                     </div>
                     <span
-                      className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${statusClass(
+                      className={`px-1.5 py-0.5 rounded-md text-[9px] font-semibold ${statusClass(
                         i.status
                       )}`}
                     >

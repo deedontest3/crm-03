@@ -1,0 +1,1 @@
+ALTER TABLE public.yearly_revenue_targets DROP CONSTRAINT IF EXISTS yearly_revenue_targets_year_key;

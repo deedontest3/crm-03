@@ -10,7 +10,7 @@ export const createRecordValidator = (tableName: string) => {
     if (tableName === 'deals') {
       // Check if we have the basic required fields
       const hasValidDealName = record.deal_name && typeof record.deal_name === 'string' && record.deal_name.trim() !== '';
-      const validStages = ['Lead', 'Discussions', 'Qualified', 'RFQ', 'Offered', 'Won', 'Lost', 'Dropped'];
+      const validStages = ['Lead', 'Discussions', 'Qualified', 'RFQ', 'Offered', 'Negotiation', 'Verbal Approval', 'Won', 'Lost', 'Hold', 'Dropped'];
       const hasValidStage = record.stage && validStages.includes(record.stage);
       
       console.log(`Import validation - deal_name: "${record.deal_name}", stage: "${record.stage}"`);

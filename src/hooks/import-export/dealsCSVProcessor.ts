@@ -116,18 +116,24 @@ export class DealsCSVProcessor {
           continue;
         }
 
-        // Check for existing deal by name
-        const { data: existingDeals } = await supabase
-          .from('deals')
-          .select('id')
-          .eq('deal_name', dealRecord.deal_name)
-          .limit(1);
-
+        // Match an existing deal by ID only. A same-name deal without an ID
+        // is a duplicate conflict, not a silent overwrite (previously importing
+        // a new deal that happened to share a name with an existing one would
+        // clobber the existing deal's fields).
         let dealId: string;
+        const providedId = (rowObj as any).id;
+        let existingById: { id: string } | null = null;
+        if (providedId && typeof providedId === 'string' && /^[0-9a-f-]{36}$/i.test(providedId)) {
+          const { data } = await supabase
+            .from('deals')
+            .select('id')
+            .eq('id', providedId)
+            .maybeSingle();
+          existingById = data as { id: string } | null;
+        }
 
-        if (existingDeals && existingDeals.length > 0) {
-          // Update existing deal
-          dealId = existingDeals[0].id;
+        if (existingById) {
+          dealId = existingById.id;
           const { error: updateError } = await supabase
             .from('deals')
             .update(dealRecord as any)
@@ -140,6 +146,21 @@ export class DealsCSVProcessor {
           }
           result.updateCount++;
         } else {
+          // Refuse to overwrite an existing same-name deal without an explicit id.
+          const { data: nameCollision } = await supabase
+            .from('deals')
+            .select('id')
+            .eq('deal_name', dealRecord.deal_name)
+            .limit(1)
+            .maybeSingle();
+          if (nameCollision) {
+            result.errorCount++;
+            result.errors.push(
+              `Row ${actualRowNumber}: A deal named "${dealRecord.deal_name}" already exists. Include its id column to update it, or rename the CSV row.`,
+            );
+            continue;
+          }
+
           // Insert new deal
           const dealToInsert = {
             deal_name: dealRecord.deal_name,
@@ -155,6 +176,7 @@ export class DealsCSVProcessor {
             expected_closing_date: dealRecord.expected_closing_date,
             customer_need: dealRecord.customer_need,
             customer_challenges: dealRecord.customer_challenges,
+            current_solution: dealRecord.current_solution,
             relationship_strength: dealRecord.relationship_strength,
             budget: dealRecord.budget,
             business_value: dealRecord.business_value,
@@ -170,7 +192,6 @@ export class DealsCSVProcessor {
             closing: dealRecord.closing,
             won_reason: dealRecord.won_reason,
             lost_reason: dealRecord.lost_reason,
-            need_improvement: dealRecord.need_improvement,
             drop_reason: dealRecord.drop_reason,
             quarterly_revenue_q1: dealRecord.quarterly_revenue_q1,
             quarterly_revenue_q2: dealRecord.quarterly_revenue_q2,
@@ -258,6 +279,7 @@ export class DealsCSVProcessor {
       'expected_closing_date': 'expected_closing_date',
       'customer_need': 'customer_need',
       'customer_challenges': 'customer_challenges',
+      'current_solution': 'current_solution',
       'relationship_strength': 'relationship_strength',
       'budget': 'budget',
       'business_value': 'business_value',
@@ -273,7 +295,6 @@ export class DealsCSVProcessor {
       'closing': 'closing',
       'won_reason': 'won_reason',
       'lost_reason': 'lost_reason',
-      'need_improvement': 'need_improvement',
       'drop_reason': 'drop_reason',
       'quarterly_revenue_q1': 'quarterly_revenue_q1',
       'quarterly_revenue_q2': 'quarterly_revenue_q2',

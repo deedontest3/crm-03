@@ -74,15 +74,26 @@ export class DateFormatUtils {
         }
       }
 
-      // Handle DD-MM-YYYY format
+      // Handle DD-MM-YYYY format.
+      // NOTE: dash-separated dates where both leading parts are ≤12 (e.g.
+      // "04-05-2024") are inherently ambiguous — could be Apr 5 or May 4. We
+      // default to DMY (the codebase's historical convention) but log a
+      // warning so an import UI can surface a format prompt later.
       const ddmmyyyyMatch = trimmedValue.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
       if (ddmmyyyyMatch) {
         const [, day, month, year] = ddmmyyyyMatch;
+        if (parseInt(day) <= 12 && parseInt(month) <= 12 && day !== month) {
+          console.warn(
+            `DateFormatUtils: ambiguous dash-date "${trimmedValue}" — assuming DD-MM-YYYY. ` +
+            `If your source is US-locale (MM-DD-YYYY), day and month may be swapped.`
+          );
+        }
         const parsedDate = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
         if (!isNaN(parsedDate.getTime())) {
           return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
         }
       }
+
 
       // Handle MM/DD/YYYY format
       const mmddyyyyMatch = trimmedValue.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);

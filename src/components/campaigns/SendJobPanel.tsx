@@ -5,9 +5,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { Pause, Play, X, Loader2, RotateCw, ChevronRight, Download } from "lucide-react";
+import { Pause, Play, X, RotateCw, ChevronRight, Download } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { format } from "date-fns";
+import { useCanManageCampaign } from "@/hooks/useCanManageCampaign";
+import { AppLoader } from "@/components/ui/loader";
 
 interface SendJob {
   id: string;
@@ -49,6 +51,7 @@ interface Props {
 
 export function SendJobPanel({ campaignId }: Props) {
   const qc = useQueryClient();
+  const { canManage } = useCanManageCampaign(campaignId);
   // Track which job rows are expanded so we lazy-fetch their items.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -101,13 +104,24 @@ export function SendJobPanel({ campaignId }: Props) {
     return (
       <Card>
         <CardContent className="py-6 flex items-center justify-center text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Loading send jobs...
+          <AppLoader variant="inline" className="mr-2" /> Loading send jobs...
         </CardContent>
       </Card>
     );
   }
 
   if (jobs.length === 0) return null;
+
+  // Only surface this panel when there is something the user can act on:
+  // a job that's currently in flight, paused, or scheduled for the future.
+  // Completed/failed/cancelled jobs are hidden — their outcome is already
+  // surfaced via toasts and the per-recipient table.
+  const visibleJobs = jobs.filter((j) => {
+    if (j.status === "queued" || j.status === "running" || j.status === "paused") return true;
+    if (j.scheduled_at && new Date(j.scheduled_at) > new Date()) return true;
+    return false;
+  });
+  if (visibleJobs.length === 0) return null;
 
   const toggleExpanded = (id: string) => {
     setExpanded((prev) => {
@@ -124,12 +138,12 @@ export function SendJobPanel({ campaignId }: Props) {
         <CardTitle className="text-sm font-semibold">Background send jobs</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {jobs.map((j) => {
+        {visibleJobs.map((j) => {
           const done = j.sent_items + j.failed_items + j.skipped_items + j.cancelled_items;
           const pct = j.total_items > 0 ? Math.round((done / j.total_items) * 100) : 0;
           const v = STATUS_VARIANTS[j.status];
-          const canPause = j.status === "queued" || j.status === "running";
-          const canResume = j.status === "paused";
+          const canPause = canManage && (j.status === "queued" || j.status === "running");
+          const canResume = canManage && j.status === "paused";
           const canCancel = canPause || canResume;
           const hasFailures = j.failed_items > 0 || j.skipped_items > 0;
           const isExpanded = expanded.has(j.id);
@@ -203,6 +217,7 @@ export function SendJobPanel({ campaignId }: Props) {
 // Lazily fetched per-item failure list with retry + CSV export.
 function FailedItemsList({ jobId, campaignId }: { jobId: string; campaignId: string }) {
   const qc = useQueryClient();
+  const { canManage } = useCanManageCampaign(campaignId);
   const { data: items = [], isLoading, refetch } = useQuery({
     queryKey: ["send-job-items", jobId],
     queryFn: async () => {
@@ -230,12 +245,21 @@ function FailedItemsList({ jobId, campaignId }: { jobId: string; campaignId: str
   };
 
   const retryAll = async () => {
+    // Batch requeue in parallel chunks so a long failure list doesn't take
+    // minutes of sequential round trips. Concurrency is intentionally modest
+    // to stay under any per-user rate limits on the RPC.
+    const CONCURRENCY = 8;
     let ok = 0;
     let fail = 0;
-    for (const it of items) {
-      const { error } = await supabase.rpc("requeue_send_job_item", { _item_id: it.id });
-      if (error) fail++;
-      else ok++;
+    for (let i = 0; i < items.length; i += CONCURRENCY) {
+      const slice = items.slice(i, i + CONCURRENCY);
+      const results = await Promise.all(
+        slice.map((it) => supabase.rpc("requeue_send_job_item", { _item_id: it.id })),
+      );
+      for (const { error } of results) {
+        if (error) fail++;
+        else ok++;
+      }
     }
     toast({
       title: `Requeued ${ok} item${ok === 1 ? "" : "s"}${fail ? ` (${fail} failed)` : ""}.`,
@@ -280,9 +304,11 @@ function FailedItemsList({ jobId, campaignId }: { jobId: string; campaignId: str
           <Button size="sm" variant="outline" className="h-6 text-[11px] gap-1" onClick={exportCsv}>
             <Download className="h-3 w-3" /> CSV
           </Button>
-          <Button size="sm" variant="outline" className="h-6 text-[11px] gap-1" onClick={retryAll}>
-            <RotateCw className="h-3 w-3" /> Retry all
-          </Button>
+          {canManage && (
+            <Button size="sm" variant="outline" className="h-6 text-[11px] gap-1" onClick={retryAll}>
+              <RotateCw className="h-3 w-3" /> Retry all
+            </Button>
+          )}
         </div>
       </div>
       <div className="max-h-[180px] overflow-y-auto divide-y text-xs">
@@ -297,15 +323,17 @@ function FailedItemsList({ jobId, campaignId }: { jobId: string; campaignId: str
                 {it.last_error_code ? `[${it.last_error_code}] ` : ""}{it.last_error_message || "Unknown error"}
               </div>
             </div>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 w-6 p-0 shrink-0"
-              onClick={() => retryOne(it.id)}
-              title="Retry this recipient"
-            >
-              <RotateCw className="h-3 w-3" />
-            </Button>
+            {canManage && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 w-6 p-0 shrink-0"
+                onClick={() => retryOne(it.id)}
+                title="Retry this recipient"
+              >
+                <RotateCw className="h-3 w-3" />
+              </Button>
+            )}
           </div>
         ))}
       </div>

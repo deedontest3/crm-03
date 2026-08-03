@@ -4,30 +4,23 @@ import { cn } from "@/lib/utils";
 import { User, Shield, Mail } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { usePermissions } from "@/contexts/PermissionsContext";
-import { Skeleton } from "@/components/ui/skeleton";
+import { AppLoader } from "@/components/ui/loader";
 
 // Lazy load heavy settings pages
 const AccountSettingsPage = lazy(() => import("@/components/settings/AccountSettingsPage"));
 const AdminSettingsPage = lazy(() => import("@/components/settings/AdminSettingsPage"));
 const EmailCenterPage = lazy(() => import("@/components/settings/EmailCenterPage"));
 
-// Loading skeleton for settings content
+// Unified panel loader for lazy settings sections
 const SettingsContentSkeleton = () => (
-  <div className="space-y-6">
-    <Skeleton className="h-8 w-48" />
-    <div className="space-y-4">
-      <Skeleton className="h-24 w-full" />
-      <Skeleton className="h-24 w-full" />
-      <Skeleton className="h-24 w-full" />
-    </div>
-  </div>
+  <AppLoader variant="panel" label="Loading settings…" />
 );
 
 interface SettingsTab {
   id: string;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
-  adminOnly?: boolean;
+  superAdminOnly?: boolean;
 }
 
 const tabs: SettingsTab[] = [
@@ -40,7 +33,7 @@ const tabs: SettingsTab[] = [
     id: "admin",
     label: "Administration",
     icon: Shield,
-    adminOnly: true,
+    superAdminOnly: true,
   },
   {
     id: "email",
@@ -54,9 +47,9 @@ const Settings = () => {
   const [activeTab, setActiveTab] = useState(() => {
     return searchParams.get('tab') || 'account';
   });
-  const { isAdmin } = usePermissions();
+  const { isSuperAdmin } = usePermissions();
 
-  const visibleTabs = tabs.filter(tab => !tab.adminOnly || isAdmin);
+  const visibleTabs = tabs.filter(tab => !tab.superAdminOnly || isSuperAdmin);
 
   // Sync tab with URL changes (e.g., browser navigation)
   useEffect(() => {
@@ -110,12 +103,12 @@ const Settings = () => {
     tabElement?.focus();
   }, [visibleTabs]);
 
-  // Redirect to account tab if not admin and on admin tab
+  // Redirect to account tab if not super admin and on admin tab
   useEffect(() => {
-    if (!isAdmin && activeTab === 'admin') {
+    if (!isSuperAdmin && activeTab === 'admin') {
       setActiveTab('account');
     }
-  }, [isAdmin, activeTab]);
+  }, [isSuperAdmin, activeTab]);
 
   const renderContent = () => {
     const section = searchParams.get('section');

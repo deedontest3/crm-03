@@ -1,3 +1,5 @@
+import { computeEmailStats } from "./emailMetrics";
+
 // Shared metric helpers for Campaign Overview & Analytics so numbers always match Monitoring.
 
 export interface EmailThread {
@@ -74,9 +76,10 @@ export function getOutreachCounts(comms: any[]) {
   const calls = getCallRows(comms);
   const linkedin = getLinkedInRows(comms);
   const contacts = getOutreachContactCounts(comms);
-  // Tile rule: email = OUTBOUND thread count, call/linkedin = unique contacts.
+  // Tile rule: email = unified `Sent` (deduped outbound messages, matches the
+  // Outreach chip and Analytics tile). call/linkedin = unique contacts.
   // Replies, follow-ups and pure-inbound threads must NOT inflate these numbers.
-  const emailThreadCount = outboundThreads.length;
+  const emailThreadCount = computeEmailStats(comms).sent;
   // F7: uniqueTouchedContacts = single contact_id touched on ANY channel,
   // counted once. Used by the funnel to clamp `Contacted` to ≤ Total Contacts.
   const uniqueTouchedContacts = new Set<string>([
@@ -132,9 +135,18 @@ export function getOutreachContactCounts(comms: any[]) {
 }
 
 export function getRepliedThreads(comms: any[]) {
-  // Only threads we initiated count as replies we earned.
+  // Replies we earned, EXCLUDING bounced conversations (a postmaster auto-reply
+  // is not a real reply). Same exclusion used by Outreach chips and Analytics.
+  const stats = computeEmailStats(comms);
   return getEmailThreads(comms).filter(
-    (t) => t.outboundCount > 0 && t.hasReply
+    (t) =>
+      t.outboundCount > 0 &&
+      t.hasReply &&
+      !!t.threadId &&
+      // Either the bucket id directly is a replied conversation OR the
+      // thread's last message conv id is in the replied set.
+      (stats.repliedConvIds.has(t.threadId) ||
+        t.messages.some((m: any) => m.conversation_id && stats.repliedConvIds.has(m.conversation_id))),
   );
 }
 

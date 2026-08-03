@@ -16,7 +16,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Progress } from "@/components/ui/progress";
 import { supabase } from "@/integrations/supabase/client";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { Send, FileText, Eye, Paperclip, AlertTriangle, Search, Users, User, RotateCw, X, ExternalLink, Mail } from "lucide-react";
 import { RichEmailBodyEditor, isEditorHtmlEmpty } from "./RichEmailBodyEditor";
 import { toast } from "@/hooks/use-toast";
@@ -24,6 +24,7 @@ import { useUserDisplayNames } from "@/hooks/useUserDisplayNames";
 import { useAuth } from "@/hooks/useAuth";
 import { useDuplicateSendGuard } from "@/hooks/useDuplicateSendGuard";
 import { useCampaignSettings } from "@/hooks/useCampaignSettings";
+import { useCanManageCampaign } from "@/hooks/useCanManageCampaign";
 import { isReachableEmail } from "@/lib/email";
 import {
   AVAILABLE_VARIABLES,
@@ -119,6 +120,7 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
 
   const { windowDays: dupWindowDays, getRecentlyEmailedIds } = useDuplicateSendGuard(campaignId);
   const { settings: campaignSettings } = useCampaignSettings();
+  const { canManage } = useCanManageCampaign(campaignId);
 
   // Active recipient list derived from mode
   const activeRecipientIds = useMemo(
@@ -260,7 +262,7 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
         timer = setTimeout(tick, 5000);
         return;
       }
-      const byContact = new Map(data.map((r: any) => [r.contact_id, r]));
+      const byContact = new Map<string, any>(data.map((r: any) => [r.contact_id, r]));
       const newlySent: string[] = [];
       setSendResults((prev) => {
         const next = prev.map((r) => {
@@ -401,6 +403,7 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
       return map;
     },
     enabled: open && accountIdsForSelected.length > 0,
+    placeholderData: keepPreviousData,
   });
 
   const ownerNamesLoading = !!campaignData?.owner && !ownerName;
@@ -408,6 +411,7 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
   // Aggregate bounce counts + latest bounce metadata for selected contacts
   const { data: bounceMetaByContact = {} } = useQuery<Record<string, { bounced_at: string | null; reason: string | null; count: number }>>({
     queryKey: ["campaign-bounced-contacts-meta", campaignId, activeRecipientIds.sort().join(",")],
+    placeholderData: keepPreviousData,
     queryFn: async () => {
       if (activeRecipientIds.length === 0) return {};
       const { data, error } = await supabase
@@ -567,6 +571,13 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
 
   const performSend = async (contactIdsToSend: string[]) => {
     if (sendingRef.current) return;
+    // Only campaign managers may send; the server (send-campaign-email /
+    // enqueue-campaign-send) enforces the same via can_manage_campaign, this
+    // just avoids a guaranteed 403 and gives a clear message.
+    if (!canManage) {
+      toast({ title: "You don't have permission to send for this campaign.", variant: "destructive" });
+      return;
+    }
     if (contactIdsToSend.length === 0) { toast({ title: "Select at least one recipient" }); return; }
     if (!subject.trim()) { toast({ title: "Subject is required" }); return; }
     if (isEditorHtmlEmpty(body)) { toast({ title: "Body is required" }); return; }
@@ -647,7 +658,11 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
     // function caps each call at MAX_ITEMS=1000.
     const ENQUEUE_THRESHOLD = campaignSettings.enqueueThreshold;
     const ENQUEUE_CHUNK = 1000; // matches enqueue-campaign-send MAX_ITEMS
-    if (!isReplyMode && mode === "bulk" && sendable.length >= ENQUEUE_THRESHOLD) {
+    // Always route through the queue when a schedule is set — the runner +
+    // claim_send_job_items RPC honour campaign_send_jobs.scheduled_at, but
+    // the direct per-recipient send path below does not.
+    const mustEnqueueForSchedule = !isReplyMode && mode === "bulk" && !!scheduledAt;
+    if (!isReplyMode && mode === "bulk" && (sendable.length >= ENQUEUE_THRESHOLD || mustEnqueueForSchedule)) {
       try {
         const items = sendable.map((c) => {
           const finalSubject = renderForContact(subject, c);
@@ -850,10 +865,36 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
           onEmailSent(c.contact_id);
         } else {
           failCount++;
-          const msg = payload?.error || payload?.errorCode || "Unknown error";
+          const isFreqCap = payload?.errorCode === "FREQUENCY_CAP_EXCEEDED";
+          const isReplyBroken = payload?.errorCode === "REPLY_THREADING_BROKEN";
+          const msg = isFreqCap
+            ? "Skipped — recipient hit the cross-campaign frequency cap (anti-fatigue guard)."
+            : isReplyBroken
+              ? "Reply threading unavailable — see toast for next steps."
+              : payload?.error || payload?.errorCode || "Unknown error";
           setSendResults(prev =>
             prev.map(r => r.contactId === c.contact_id ? { ...r, status: "failed", error: msg } : r)
           );
+          if (isFreqCap) {
+            toast({
+              title: "Recipient skipped — frequency cap reached",
+              description: payload?.error,
+              variant: "destructive",
+              duration: 4000,
+            });
+          }
+          if (isReplyBroken) {
+            // Defensive only: the edge function no longer returns this code
+            // because replies fall back to plain sendMail with MAPI threading
+            // properties. Kept so older deployments don't show "Unknown error".
+            toast({
+              title: "Reply couldn't be threaded",
+              description:
+                "The reply was rejected by Microsoft Graph. The message wasn't sent — try again, or close this dialog and send as a new email.",
+              variant: "destructive",
+              duration: 6000,
+            });
+          }
           // Campaign is no longer active — abort the rest of the batch instantly
           // so we don't hammer the function with the same blocking error.
           if (payload?.errorCode === "CAMPAIGN_NOT_ACTIVE") {
@@ -907,11 +948,38 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
     } else if (cancelledCount > 0) {
       toast({ title: `Sent ${successCount}, ${cancelledCount} cancelled${failCount ? `, ${failCount} failed` : ""}.` });
     } else {
-      toast({ title: `Sent ${successCount}, failed ${failCount}. Review the list and retry failures.`, variant: "destructive" });
+      // Detect Microsoft 365 sendMail denials (Mail.Send permission missing
+      // or Application Access Policy excludes the mailbox) so we can give
+      // one actionable hint instead of a generic "review the list".
+      // Reply-thread denials are now handled silently inside the edge
+      // function (sendMail with MAPI threading), so they never surface here.
+      const accessDenied = sendResults.some(
+        r => r.status === "failed" && /denied send access|ErrorAccessDenied/i.test(r.error || "")
+      );
+      toast({
+        title: `Sent ${successCount}, failed ${failCount}. Review the list and retry failures.`,
+        description: accessDenied
+          ? "Microsoft 365 denied send access. Ask your admin to grant Mail.Send + Application Access Policy for your mailbox."
+          : undefined,
+        variant: "destructive",
+      });
     }
   };
 
   const handleSendClick = async () => {
+    // Schedule sanity: block if the chosen time is already in the past
+    // (modal may have been open for several minutes).
+    if (!isReplyMode && mode === "bulk" && scheduledAt) {
+      const scheduledMs = new Date(scheduledAt).getTime();
+      if (!Number.isFinite(scheduledMs) || scheduledMs <= Date.now() + 30_000) {
+        toast({
+          title: "Scheduled time is in the past",
+          description: "Pick a future time at least a minute from now, or clear the schedule to send immediately.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
     if (!isReplyMode && selectedBouncedCount > 0) {
       setBounceConfirmOpen(true);
       return;
@@ -961,29 +1029,70 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
   // Collapse recipient list once user has picked some — saves vertical space.
   const [recipientsExpanded, setRecipientsExpanded] = useState(true);
 
-  // Schedule "min" / "max" — recomputed when the modal opens so a fresh "now"
-  // is used each session, but stable across in-session re-renders.
+  // Schedule "min" — re-tick every 30 s so a long-open modal can't accept a
+  // value that's already in the past by the time Send is clicked.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (!open) return;
+    const t = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, [open]);
   const scheduleMin = useMemo(
-    () => new Date(Date.now() + 60_000).toISOString().slice(0, 16),
-    [open]
+    () => new Date(nowTick + 60_000).toISOString().slice(0, 16),
+    [nowTick]
   );
   const scheduleMax = useMemo(
-    () => new Date(Date.now() + 365 * 24 * 60 * 60_000).toISOString().slice(0, 16),
-    [open]
+    () => new Date(nowTick + 365 * 24 * 60 * 60_000).toISOString().slice(0, 16),
+    [nowTick]
   );
 
-  // Auto-collapse recipients shortly after the user finishes selecting.
+  // ── Recipient list: 10-second idle auto-collapse ─────────────────
+  // Earlier behaviour collapsed the list 350 ms after every checkbox
+  // toggle, which made multi-select feel broken. New behaviour: only
+  // collapse after 10 s of NO interaction — checkbox toggles, search
+  // typing, "All/Clear" clicks, hover, or scroll all reset the timer.
+  const recipientsHoverRef = useRef(false);
+  const recipientsSearchFocusRef = useRef(false);
+  const [recipientsActivityTick, setRecipientsActivityTick] = useState(0);
+  const bumpRecipientActivity = () => setRecipientsActivityTick((n) => n + 1);
+
+  // Re-expand whenever selection drops to zero.
   useEffect(() => {
     if (mode !== "bulk") return;
     if (selectedContactIds.length === 0) {
       setRecipientsExpanded(true);
-      return;
     }
-    if (!recipientSearch) {
-      const t = setTimeout(() => setRecipientsExpanded(false), 350);
-      return () => clearTimeout(t);
-    }
-  }, [selectedContactIds, recipientSearch, mode]);
+  }, [selectedContactIds, mode]);
+
+  // Idle-collapse timer.
+  useEffect(() => {
+    if (!open) return;
+    if (mode !== "bulk") return;
+    if (!recipientsExpanded) return;
+    if (selectedContactIds.length === 0) return;
+    if (recipientSearch) return; // never collapse while searching
+    const t = setTimeout(() => {
+      // Re-check guards at fire time — state may have changed.
+      if (recipientsHoverRef.current) return;
+      if (recipientsSearchFocusRef.current) return;
+      setRecipientsExpanded(false);
+    }, 10_000);
+    return () => clearTimeout(t);
+  }, [
+    open,
+    mode,
+    recipientsExpanded,
+    selectedContactIds.length,
+    recipientSearch,
+    recipientsActivityTick,
+  ]);
+
+  // Whether the auto-collapse timer is currently armed (drives the hint label).
+  const autoCollapseArmed =
+    mode === "bulk" &&
+    recipientsExpanded &&
+    selectedContactIds.length > 0 &&
+    !recipientSearch;
 
   // Keep previewContactId valid: if it points to a no-longer-active recipient,
   // snap to the first active one (or clear).
@@ -1053,19 +1162,6 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
                 </ToggleGroup>
               )}
               <div className="ml-auto flex items-center gap-2 min-w-0">
-                {senderEmail && (
-                  <TooltipProvider delayDuration={150}>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="hidden sm:flex items-center gap-1 text-[11px] font-normal text-muted-foreground min-w-0">
-                          <Mail className="h-3 w-3 shrink-0" />
-                          <span className="text-foreground truncate max-w-[140px]">{senderEmail}</span>
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>From: {senderEmail}</TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                )}
                 <Button
                   type="button"
                   variant="outline"
@@ -1083,25 +1179,61 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
           <div className="grid gap-2 py-0">
             {/* Send mode now lives in the dialog header (above) */}
 
-            {/* Recipients (full-width row) */}
-            <div className="space-y-1">
-              {(isReplyMode || mode === "single") && (
+            {/* Recipients (full-width row) — Reply mode pairs Recipient with Template */}
+            {isReplyMode ? (
+              <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,260px)_1fr] gap-2 items-end">
+                <div className="space-y-1 min-w-0">
+                  <Label className="text-xs flex items-center gap-1.5">
+                    <Users className="h-3 w-3" />
+                    Recipient *
+                  </Label>
+                  <div className="border rounded-md px-2.5 h-8 flex items-center text-sm bg-muted/30 truncate">
+                    <span className="font-medium truncate">
+                      {previewContact?.contacts?.contact_name || "Recipient"}
+                    </span>
+                    {previewContact?.contacts?.email && (
+                      <span className="text-xs text-muted-foreground ml-1.5 truncate">
+                        &lt;{previewContact.contacts.email}&gt;
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="space-y-1 min-w-0">
+                  <Label className="text-xs flex items-center gap-1.5">
+                    <FileText className="h-3 w-3" />
+                    Template
+                  </Label>
+                  <Select value={templateId} onValueChange={handleTemplateSelect}>
+                    <SelectTrigger className="h-8 text-sm">
+                      <SelectValue placeholder="Optional…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {templates.map(t => (
+                        <SelectItem key={t.id} value={t.id}>
+                          <div className="flex items-center gap-2">
+                            <FileText className="h-3 w-3" />
+                            <span className="truncate">{t.template_name}</span>
+                            {t.email_type && <Badge variant="secondary" className="text-[10px] px-1 py-0">{t.email_type}</Badge>}
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_220px] gap-2 items-end">
+              <div className="space-y-1 min-w-0">
+              {mode === "single" && (
                 <Label className="text-xs flex items-center gap-1.5">
                   <Users className="h-3 w-3" />
                   Recipient *
                 </Label>
               )}
 
-              {isReplyMode ? (
-                <div className="border rounded-md px-2.5 py-1 text-sm bg-muted/30">
-                  {previewContact?.contacts?.contact_name || "Recipient"}{" "}
-                  <span className="text-xs text-muted-foreground">
-                    {previewContact?.contacts?.email}
-                  </span>
-                </div>
-              ) : mode === "single" ? (
+              {mode === "single" ? (
                 <Select value={singleContactId} onValueChange={setSingleContactId}>
-                  <SelectTrigger className="h-8 text-sm w-full max-w-[340px]">
+                  <SelectTrigger className="h-8 text-sm w-full">
                     <SelectValue placeholder="Select a contact..." />
                   </SelectTrigger>
                   <SelectContent>
@@ -1147,7 +1279,9 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
                           <Search className="h-3 w-3 text-muted-foreground shrink-0" />
                           <Input
                             value={recipientSearch}
-                            onChange={e => setRecipientSearch(e.target.value)}
+                            onChange={e => { setRecipientSearch(e.target.value); bumpRecipientActivity(); }}
+                            onFocus={() => { recipientsSearchFocusRef.current = true; bumpRecipientActivity(); }}
+                            onBlur={() => { recipientsSearchFocusRef.current = false; bumpRecipientActivity(); }}
                             placeholder="Search…"
                             className="h-6 border-0 bg-transparent text-xs px-1 focus-visible:ring-0 focus-visible:ring-offset-0 min-w-0"
                           />
@@ -1157,7 +1291,7 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
                           variant="outline"
                           size="sm"
                           className="h-6 text-[10px] px-2 shrink-0"
-                          onClick={toggleSelectAllFiltered}
+                          onClick={() => { toggleSelectAllFiltered(); bumpRecipientActivity(); }}
                           disabled={selectableFiltered.length === 0}
                         >
                           {allFilteredSelected ? "Clear" : "All"}
@@ -1181,18 +1315,28 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
                         )}
                       </div>
                     )}
+                    {autoCollapseArmed && (
+                      <span className="text-[9px] text-muted-foreground shrink-0 hidden md:inline" title="Recipient list auto-collapses after 10 seconds of no activity">
+                        auto-collapse 10s
+                      </span>
+                    )}
                     <Button
                       type="button"
                       variant="ghost"
                       size="sm"
                       className="h-6 text-[10px] px-2 shrink-0 gap-1"
-                      onClick={() => setRecipientsExpanded(v => !v)}
+                      onClick={() => { setRecipientsExpanded(v => !v); bumpRecipientActivity(); }}
                     >
                       {recipientsExpanded ? "Collapse" : "Edit"}
                     </Button>
                   </div>
                   {recipientsExpanded && (
-                    <div className="max-h-[180px] overflow-y-auto divide-y bg-background">
+                    <div
+                      className="max-h-[180px] overflow-y-auto divide-y bg-background"
+                      onMouseEnter={() => { recipientsHoverRef.current = true; bumpRecipientActivity(); }}
+                      onMouseLeave={() => { recipientsHoverRef.current = false; bumpRecipientActivity(); }}
+                      onScroll={bumpRecipientActivity}
+                    >
                       {filteredContacts.length === 0 && (
                         <p className="text-xs text-muted-foreground p-2">No contacts.</p>
                       )}
@@ -1206,11 +1350,12 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
                             aria-checked={selectedContactIds.includes(c.contact_id)}
                             aria-disabled={noEmail}
                             tabIndex={noEmail ? -1 : 0}
-                            onClick={() => !noEmail && toggleContact(c.contact_id)}
+                            onClick={() => { if (!noEmail) { toggleContact(c.contact_id); bumpRecipientActivity(); } }}
                             onKeyDown={(e) => {
                               if (!noEmail && (e.key === " " || e.key === "Enter")) {
                                 e.preventDefault();
                                 toggleContact(c.contact_id);
+                                bumpRecipientActivity();
                               }
                             }}
                             className={`flex items-center gap-2 px-2 py-1 text-xs hover:bg-muted/50 ${noEmail ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
@@ -1252,62 +1397,8 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
                   )}
                 </div>
               )}
-            </div>
-
-            {/* Subject + Template (paired row) */}
-            <div className="grid grid-cols-1 sm:grid-cols-[1fr_220px] gap-2 items-end">
-              <div className="space-y-0.5 min-w-0">
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <Label className="text-xs flex items-center gap-1.5">
-                    Subject *
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <button
-                          type="button"
-                          className="inline-flex items-center gap-1 rounded border px-1.5 py-0 h-5 text-[10px] text-muted-foreground hover:bg-muted"
-                          title="Insert variable"
-                        >
-                          {"{…}"} vars
-                        </button>
-                      </PopoverTrigger>
-                      <PopoverContent align="start" className="w-auto max-w-[340px] p-2">
-                        <div className="text-[10px] text-muted-foreground mb-1.5">
-                          Insert into <span className="font-semibold">{focusedField}</span>
-                        </div>
-                        <div className="flex flex-wrap gap-1">
-                          {AVAILABLE_VARIABLES.map(v => (
-                            <Badge
-                              key={v}
-                              variant="outline"
-                              className="text-[10px] px-1.5 py-0 cursor-pointer hover:bg-muted"
-                              onMouseDown={(e) => { e.preventDefault(); insertVariable(v); }}
-                            >
-                              {v}
-                            </Badge>
-                          ))}
-                        </div>
-                      </PopoverContent>
-                    </Popover>
-                  </Label>
-                  {(subjectWarn || subjectTooLong) && (
-                    <span
-                      className={`text-[10px] ${subjectTooLong ? "text-destructive font-medium" : "text-amber-600"}`}
-                      title="Subjects over ~60 chars get truncated in Gmail/Outlook previews; over ~78 chars may be cut entirely."
-                    >
-                      {subjectLen} chars{subjectTooLong ? " — may be truncated" : " — long"}
-                    </span>
-                  )}
-                </div>
-                <Input
-                  ref={subjectRef}
-                  value={subject}
-                  onChange={e => setSubject(e.target.value)}
-                  onFocus={() => setFocusedField("subject")}
-                  placeholder="Email subject..."
-                  className="h-8 text-sm"
-                />
               </div>
-              <div className="space-y-0.5 min-w-0">
+              <div className="space-y-1 min-w-0">
                 <Label className="text-xs flex items-center gap-1.5">
                   <FileText className="h-3 w-3" />
                   Template
@@ -1330,6 +1421,41 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
                 </Select>
               </div>
             </div>
+            )}
+
+            {/* Subject — full width (Template now paired with Recipient above) */}
+            <div>
+              <div className="space-y-0.5 min-w-0">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <Label className="text-xs flex items-center gap-1.5">
+                    Subject *
+                  </Label>
+                  {(subjectWarn || subjectTooLong) && (
+                    <span
+                      className={`text-[10px] ${subjectTooLong ? "text-destructive font-medium" : "text-amber-600"}`}
+                      title="Subjects over ~60 chars get truncated in Gmail/Outlook previews; over ~78 chars may be cut entirely."
+                    >
+                      {subjectLen} chars{subjectTooLong ? " — may be truncated" : " — long"}
+                    </span>
+                  )}
+                </div>
+                <Input
+                  ref={subjectRef}
+                  value={subject}
+                  onChange={e => { if (!isReplyMode) setSubject(e.target.value); }}
+                  onFocus={() => setFocusedField("subject")}
+                  placeholder="Email subject..."
+                  className="h-8 text-sm"
+                  readOnly={isReplyMode}
+                  title={isReplyMode ? "Subject is locked in reply mode to keep the email in the same thread" : undefined}
+                />
+                {isReplyMode && (
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    Locked to keep the reply in the same email thread (Outlook behavior).
+                  </p>
+                )}
+              </div>
+            </div>
 
             {/* Body editor — full width (preview lives in a dedicated modal) */}
             <div className="space-y-0.5 min-w-0">
@@ -1341,9 +1467,6 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
                     Placeholder text
                   </Badge>
                 )}
-                <span className="ml-auto text-[10px] text-muted-foreground">
-                  Use <button type="button" className="underline hover:text-foreground" onClick={() => setPreviewOpen(true)}>Preview</button> to see merged output.
-                </span>
               </Label>
               <div onFocus={() => setFocusedField("body")}>
                 <RichEmailBodyEditor value={body} onChange={setBody} minHeightPx={220} />
@@ -1574,10 +1697,15 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
                 noReachable ||
                 subjectTooLong ||
                 attachmentSizeBytes > MAX_ATTACHMENT_BYTES;
+              const isScheduled = !isReplyMode && mode === "bulk" && !!scheduledAt;
               const labelEl = sending ? (
                 `Sending ${sentSoFar}/${totalToSend}…`
               ) : noReachable ? (
                 "0 valid emails"
+              ) : isScheduled ? (
+                activeRecipientIds.length <= 1
+                  ? "Schedule Send"
+                  : `Schedule ${reachable} email${reachable === 1 ? "" : "s"}`
               ) : activeRecipientIds.length <= 1 ? (
                 "Send Email"
               ) : (() => {
@@ -1595,9 +1723,11 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
                         </Button>
                       </span>
                     </TooltipTrigger>
-                    {noReachable && (
+                    {noReachable ? (
                       <TooltipContent>0 recipients with valid email — Send disabled</TooltipContent>
-                    )}
+                    ) : isScheduled ? (
+                      <TooltipContent>Will be sent at {new Date(scheduledAt).toLocaleString()}</TooltipContent>
+                    ) : null}
                   </Tooltip>
                 </TooltipProvider>
               );

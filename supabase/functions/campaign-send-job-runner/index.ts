@@ -9,10 +9,11 @@
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { requireCronSecret } from "../_shared/auth-gate.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-cron-secret",
 };
 
 const BATCH_SIZE = 25;
@@ -67,6 +68,11 @@ function backoffMinutes(attempt: number): number {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+
+  // Cron-only endpoint that drives outbound email. Fail-closed cron gate.
+  const cron = requireCronSecret(req);
+  if ("response" in cron) return cron.response;
+
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -254,16 +260,28 @@ Deno.serve(async (req) => {
           const isPermanent = PERMANENT_CODES.has(code);
           const reachedMax = it.attempt_count >= MAX_ATTEMPTS;
 
+          // #7: Cap codes are deferable, not retryable. Burning the 5
+          // exponential-backoff retries on a closed cap window wastes attempts
+          // because the window only rolls every 1h/24h. Defer to the next cap
+          // window roll (≈1h) without consuming a retry.
+          if (code === "FREQUENCY_CAP_EXCEEDED" || code === "SEND_CAP_EXCEEDED") {
+            const next = new Date(Date.now() + 60 * 60_000);
+            await admin.rpc("release_send_job_item_for_later", {
+              _item_id: it.id,
+              _next_at: next.toISOString(),
+              _reason: code,
+            });
+            deferred++;
+            continue;
+          }
+
           if (isPermanent || reachedMax) {
-            // Terminal: 'skipped' for permanent codes, 'failed' for retry-exhausted.
             await admin
               .from("campaign_send_job_items")
               .update({
                 status: isPermanent ? "skipped" : "failed",
                 last_error_code: code,
                 last_error_message: msg,
-                // Push next_attempt far out so even if the claim RPC ever
-                // re-included terminal statuses, this row would not be picked.
                 next_attempt_at: new Date(Date.now() + 365 * 24 * 60 * 60_000).toISOString(),
               })
               .eq("id", it.id);

@@ -64,27 +64,47 @@ export const useSimpleAccountsImportExport = (onRefresh: () => void) => {
     });
     
     try {
-      // Read file content
+      // Read file content with explicit encoding handling. Strip a leading
+      // UTF-8 BOM so it doesn't sneak into the first CSV header cell, and warn
+      // when the file appears to be non-UTF8 (Excel Windows-1252 exports).
       console.log('Reading file content...');
-      const text = await file.text();
+      const buf = await file.arrayBuffer();
+      let text = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+      if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+      if (text.includes('\ufffd')) {
+        console.warn('Import: file contained non-UTF-8 bytes — special characters may be corrupted.');
+        toast({
+          title: "Encoding warning",
+          description: "The CSV had non-UTF-8 characters. Re-save it as UTF-8 for best results.",
+        });
+      }
       console.log('File loaded successfully. Content length:', text.length, 'characters');
-      
+
       if (!text || text.trim() === '') {
         throw new Error('CSV file is empty');
       }
 
       // Log first 500 chars for debugging
       console.log('CSV preview (first 500 chars):', text.substring(0, 500));
-      
+
       const processor = new GenericCSVProcessor();
-      
+
       console.log('Starting CSV processing for accounts table...');
+      let lastProgressUpdate = 0;
       const result = await processor.processCSV(text, {
         tableName: 'accounts',
         userId: user.id,
         onProgress: (processed, total) => {
-          console.log(`Accounts import progress: ${processed}/${total}`);
-        }
+          const now = Date.now();
+          if (now - lastProgressUpdate > 250 || processed === total) {
+            lastProgressUpdate = now;
+            importToast.update({
+              id: importToast.id,
+              title: "Importing Accounts...",
+              description: `Processed ${processed} of ${total}...`,
+            } as any);
+          }
+        },
       });
 
       console.log('=== IMPORT RESULT ===');
@@ -199,19 +219,54 @@ export const useSimpleAccountsImportExport = (onRefresh: () => void) => {
         return;
       }
 
-      console.log('Exporting', accounts.length, 'accounts');
+      // Resolve user UUIDs (account_owner / created_by / modified_by) into
+      // human-readable display names for a friendlier CSV export.
+      const userIdSet = new Set<string>();
+      for (const a of accounts as any[]) {
+        if (a.account_owner) userIdSet.add(a.account_owner);
+        if (a.created_by) userIdSet.add(a.created_by);
+        if (a.modified_by) userIdSet.add(a.modified_by);
+      }
+      const userIds = Array.from(userIdSet);
+      const nameById: Record<string, string> = {};
+      if (userIds.length) {
+        try {
+          const { supabase } = await import('@/integrations/supabase/client');
+          const { data: profiles } = await supabase
+            .from('profiles_public' as any)
+            .select('id, full_name, "Email ID"')
+            .in('id', userIds);
+          for (const p of (profiles || []) as any[]) {
+            const raw = (p.full_name || '').trim();
+            const email = p["Email ID"] || '';
+            nameById[p.id] = raw && !raw.includes('@') && raw !== email
+              ? raw
+              : (email ? email.split('@')[0] : p.id);
+          }
+        } catch (e) {
+          console.warn('Failed to resolve user display names for export', e);
+        }
+      }
+      const enriched = (accounts as any[]).map((a) => ({
+        ...a,
+        account_owner: a.account_owner ? (nameById[a.account_owner] || a.account_owner) : a.account_owner,
+        created_by: a.created_by ? (nameById[a.created_by] || a.created_by) : a.created_by,
+        modified_by: a.modified_by ? (nameById[a.modified_by] || a.modified_by) : a.modified_by,
+      }));
+
+      console.log('Exporting', enriched.length, 'accounts');
       
       const filename = getExportFilename('accounts', 'all');
       const exporter = new GenericCSVExporter();
-      await exporter.exportToCSV(accounts, filename, ACCOUNTS_EXPORT_FIELDS);
+      await exporter.exportToCSV(enriched, filename, ACCOUNTS_EXPORT_FIELDS);
 
       logSecurityEvent('DATA_EXPORT', 'accounts', undefined, {
-        record_count: accounts.length
+        record_count: enriched.length
       });
       
       toast({
         title: "Export Successful",
-        description: `${accounts.length} accounts exported`,
+        description: `${enriched.length} accounts exported`,
       });
 
       console.log('=== ACCOUNTS EXPORT COMPLETED ===');

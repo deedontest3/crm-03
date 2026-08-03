@@ -5,10 +5,11 @@ import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { User, Loader2, Trash2, Camera, Sun, Moon, Monitor } from 'lucide-react';
+import { User, Trash2, Camera, Sun, Moon, Monitor } from "lucide-react";
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { getFormattedTimezoneList } from '@/utils/countryRegionMapping';
+import { AppLoader } from "@/components/ui/loader";
 
 const timezones = getFormattedTimezoneList();
 
@@ -157,7 +158,7 @@ const ProfileSection = ({ profile, setProfile, userId, displayPrefs, setDisplayP
                   onClick={handleRemoveAvatar}
                   disabled={removingAvatar}
                 >
-                  {removingAvatar ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                  {removingAvatar ? <AppLoader variant="inline" /> : <Trash2 className="h-3 w-3" />}
                 </Button>
               )}
             </div>

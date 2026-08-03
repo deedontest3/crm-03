@@ -16,6 +16,7 @@ import { ActionItemModal } from '@/components/ActionItemModal';
 import { useAllUsers } from '@/hooks/useUserDisplayNames';
 import { useActionItemColumnPreferences } from '@/hooks/useActionItemColumnPreferences';
 import { Badge } from '@/components/ui/badge';
+import { AppLoader } from '@/components/ui/loader';
 
 type ViewMode = 'list' | 'kanban' | 'calendar';
 export default function ActionItems() {
@@ -407,9 +408,8 @@ export default function ActionItems() {
 
       {/* Content Area */}
       <div className={viewMode === 'list' ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-auto p-6'}>
-        {isLoading ? <div className="flex items-center justify-center h-64">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-          </div> : <>
+        {isLoading ? <AppLoader variant="panel" label="Loading action items…" /> : <>
+
             {viewMode === 'list' && <div className="h-full overflow-auto">
                 <ActionItemsTable actionItems={paginatedItems} selectedIds={selectedIds} onSelectionChange={setSelectedIds} onEdit={handleEdit} onDelete={handleDelete} onStatusChange={handleStatusChange} onPriorityChange={handlePriorityChange} onAssignedToChange={handleAssignedToChange} onDueDateChange={handleDueDateChange} sortField={sortField} sortDirection={sortDirection} onSort={handleSort} columnWidths={columnWidths} onColumnResize={updateColumnWidth} />
               </div>}

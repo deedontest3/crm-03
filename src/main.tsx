@@ -1,6 +1,10 @@
 import { createRoot } from 'react-dom/client'
 import App from './App.tsx'
 import './index.css'
+if (import.meta.env.DEV) {
+  // Registers window.__debugDealLink for triaging deal↔account linking.
+  import('./lib/debugDealLinking');
+}
 
 const rootEl = document.getElementById("root")!;
 createRoot(rootEl).render(<App />);

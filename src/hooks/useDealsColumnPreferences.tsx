@@ -31,7 +31,7 @@ const defaultColumns: DealColumnConfig[] = [
   { field: 'priority', label: 'Priority', visible: true, order: 5 },
   { field: 'total_contract_value', label: 'Value', visible: true, order: 6 },
   { field: 'probability', label: 'Probability', visible: true, order: 7 },
-  { field: 'expected_closing_date', label: 'Expected Close', visible: true, order: 8 },
+  { field: 'expected_closing_date', label: 'Target Closure date', visible: true, order: 8 },
   { field: 'region', label: 'Region', visible: false, order: 9 },
   { field: 'project_duration', label: 'Duration', visible: false, order: 10 },
   { field: 'start_date', label: 'Start Date', visible: false, order: 11 },

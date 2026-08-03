@@ -5,7 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Check, X, Edit3 } from "lucide-react";
-import { Deal, DealStage, DEAL_STAGES, STAGE_COLORS } from "@/types/deal";
+import { Deal, DealStage, DEAL_STAGES, STAGE_COLORS, getStageLabel } from "@/types/deal";
 import { cn } from "@/lib/utils";
 
 interface InlineEditCellProps {
@@ -127,11 +127,10 @@ export const InlineEditCell = ({
       return Number(value).toLocaleString();
     }
     if (type === 'date' && value) {
-      try {
-        return new Date(value).toLocaleDateString();
-      } catch {
-        return value;
-      }
+      const d = new Date(value);
+      return isNaN(d.getTime())
+        ? value
+        : `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
     }
     if (type === 'boolean') {
       return value ? 'Yes' : 'No';
@@ -158,7 +157,7 @@ export const InlineEditCell = ({
         title="Click to edit"
       >
         {isStage ? (
-          <span className={cn("text-xs font-semibold", stageColorClass)}>{String(value)}</span>
+          <span className={cn("text-xs font-semibold", stageColorClass)}>{getStageLabel(value as DealStage)}</span>
         ) : (
           <span className={cn("truncate flex-1 text-sm", isProjectName && "text-primary font-medium")}>
             {formatDisplayValue()}
@@ -238,7 +237,7 @@ export const InlineEditCell = ({
             </SelectTrigger>
             <SelectContent>
               {DEAL_STAGES.map((stage) => (
-                <SelectItem key={stage} value={stage}>{stage}</SelectItem>
+                <SelectItem key={stage} value={stage}>{getStageLabel(stage)}</SelectItem>
               ))}
             </SelectContent>
           </Select>

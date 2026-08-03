@@ -1,10 +1,33 @@
 
+// NOTE: This endpoint accepts self-reported telemetry from the client. Anything
+// the caller sends is written to security_audit_log with the caller's user_id.
+// This is best-effort observability, not an authoritative audit trail — a
+// malicious client can either poison this log or bypass it entirely by calling
+// the real data APIs directly. Treat entries here as hints, not evidence.
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+}
+
+// In-memory token bucket: max 60 events per user per 5-minute window.
+// Cheap first-line defence against log-poisoning floods; process-local
+// (edge functions may run multiple instances), which is fine for a soft cap.
+const RATE_LIMIT_MAX = 60;
+const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
+const rateBucket = new Map<string, { count: number; resetAt: number }>();
+function checkRateLimit(userId: string): boolean {
+  const now = Date.now();
+  const entry = rateBucket.get(userId);
+  if (!entry || entry.resetAt < now) {
+    rateBucket.set(userId, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return true;
+  }
+  if (entry.count >= RATE_LIMIT_MAX) return false;
+  entry.count += 1;
+  return true;
 }
 
 interface SecurityEvent {
@@ -49,6 +72,14 @@ serve(async (req) => {
     if (authError || !user) {
       throw new Error('Unauthorized')
     }
+
+    if (!checkRateLimit(user.id)) {
+      return new Response(
+        JSON.stringify({ error: 'Rate limit exceeded (60 events / 5 min per user)' }),
+        { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
 
     const { action, details } = await req.json() as { 
       action: string;

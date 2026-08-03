@@ -1,8 +1,9 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { requireAdmin, requireCronSecret } from '../_shared/auth-gate.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-cron-secret',
 };
 
 // Acquire Microsoft Graph API access token
@@ -235,36 +236,26 @@ Deno.serve(async (req) => {
     const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
+    // Cron-invoked endpoint. Fail-closed cron gate.
+    const cron = requireCronSecret(req);
+    if ("response" in cron) return cron.response;
+
     const appUrl = 'https://crm.realthingks.com';
 
-    // Check for test mode
+    // Optional test mode: admin-only, scopes the run to a single user id.
+    // Never mutates notification_preferences.
     let testUserId: string | null = null;
     try {
       const body = await req.json();
-      testUserId = body?.test_user_id || null;
+      const requestedTestId = body?.test_user_id || null;
+      if (requestedTestId) {
+        const admin = await requireAdmin(req);
+        if ("response" in admin) return admin.response;
+        testUserId = requestedTestId;
+        console.log(`[TEST MODE] Admin ${admin.userId} scoped run to user ${testUserId}`);
+      }
     } catch { /* no body or not JSON */ }
 
-    if (testUserId) {
-      console.log(`[TEST MODE] Running for user ${testUserId} only, bypassing time checks`);
-
-      const { data: existingPref } = await supabase
-        .from('notification_preferences')
-        .select('user_id')
-        .eq('user_id', testUserId)
-        .maybeSingle();
-
-      if (!existingPref) {
-        await supabase
-          .from('notification_preferences')
-          .insert({ user_id: testUserId, task_reminders: true, email_notifications: true });
-        console.log(`[TEST MODE] Created notification_preferences for user ${testUserId}`);
-      } else {
-        await supabase
-          .from('notification_preferences')
-          .update({ task_reminders: true, email_notifications: true })
-          .eq('user_id', testUserId);
-      }
-    }
 
     let prefsQuery = supabase
       .from('notification_preferences')

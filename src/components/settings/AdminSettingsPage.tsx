@@ -1,27 +1,32 @@
 import { useState, lazy, Suspense, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Users, Lock, History, Activity, BarChart3, Database, ShieldAlert as ShieldAlertIcon, MailWarning, Ban } from 'lucide-react';
+import { Users, Lock, History, Activity, BarChart3, Database, ShieldAlert as ShieldAlertIcon, MailWarning, Ban, DollarSign, Sparkles } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { useUserRole } from '@/hooks/useUserRole';
-import { Loader2, ShieldAlert } from 'lucide-react';
+import { ShieldAlert } from "lucide-react";
 import SettingsCard from './shared/SettingsCard';
 import SettingsLoadingSkeleton from './shared/SettingsLoadingSkeleton';
+import { AppLoader } from "@/components/ui/loader";
 
 // Lazy load admin section components
 const UserManagement = lazy(() => import('@/components/UserManagement'));
 const PageAccessSettings = lazy(() => import('@/components/settings/PageAccessSettings'));
 const AuditLogsSettings = lazy(() => import('@/components/settings/AuditLogsSettings'));
 const BackupRestoreSettings = lazy(() => import('@/components/settings/BackupRestoreSettings'));
+const CurrencyConverterCard = lazy(() => import('@/components/settings/CurrencyConverterCard'));
 const SuppressionListSettings = lazy(() => import('@/components/settings/SuppressionListSettings'));
 const SendCapSettings = lazy(() => import('@/components/settings/SendCapSettings'));
+const DatabaseCleanupPanel = lazy(() => import('@/components/settings/cleanup/DatabaseCleanupPanel'));
 
 const adminTabs = [
   { id: 'users', label: 'Users', icon: Users },
   { id: 'access', label: 'Access', icon: Lock },
   { id: 'logs', label: 'Logs', icon: History },
   { id: 'system', label: 'System', icon: Activity },
+  { id: 'cleanup', label: 'Cleanup', icon: Sparkles },
+  { id: 'currency', label: 'Currency', icon: DollarSign },
   { id: 'compliance', label: 'Compliance', icon: Ban },
   { id: 'reports', label: 'Reports', icon: BarChart3 }
 ];
@@ -31,7 +36,7 @@ interface AdminSettingsPageProps {
 }
 
 const AdminSettingsPage = ({ defaultSection }: AdminSettingsPageProps) => {
-  const { userRole, loading: roleLoading } = useUserRole();
+  const { isSuperAdmin, loading: roleLoading } = useUserRole();
   const navigate = useNavigate();
 
   const getTabFromSection = (section: string | null) => {
@@ -42,6 +47,8 @@ const AdminSettingsPage = ({ defaultSection }: AdminSettingsPageProps) => {
       'audit-logs': 'logs',
       'backup': 'system',
       'system-status': 'system',
+      'currency': 'currency',
+      'cleanup': 'cleanup',
       'suppression': 'compliance',
       'send-caps': 'compliance',
       'compliance': 'compliance',
@@ -57,17 +64,15 @@ const AdminSettingsPage = ({ defaultSection }: AdminSettingsPageProps) => {
     }
   }, [defaultSection]);
 
-  const isAdmin = userRole === 'admin';
-
   if (roleLoading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <AppLoader variant="inline" />
       </div>
     );
   }
 
-  if (!isAdmin) {
+  if (!isSuperAdmin) {
     return (
       <Card>
         <CardContent className="py-16">
@@ -75,7 +80,7 @@ const AdminSettingsPage = ({ defaultSection }: AdminSettingsPageProps) => {
             <ShieldAlert className="h-16 w-16 text-muted-foreground mb-4" />
             <h3 className="text-xl font-semibold">Access Denied</h3>
             <p className="text-muted-foreground mt-2 max-w-md">
-              Only administrators can access administration settings.
+              Only <strong>Super Admins</strong> can access administration settings.
               Contact your system administrator if you need access.
             </p>
           </div>
@@ -88,7 +93,7 @@ const AdminSettingsPage = ({ defaultSection }: AdminSettingsPageProps) => {
     <div className="space-y-6 w-full">
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <div className="sticky top-0 z-10 bg-background pb-2 border-b border-border">
-          <TabsList className="grid w-full grid-cols-6 max-w-3xl">
+          <TabsList className="grid w-full grid-cols-8 max-w-4xl">
             {adminTabs.map(tab => {
               const Icon = tab.icon;
               return (
@@ -102,11 +107,9 @@ const AdminSettingsPage = ({ defaultSection }: AdminSettingsPageProps) => {
         </div>
 
         <TabsContent value="users" className="mt-6 space-y-6">
-          <SettingsCard icon={Users} title="User Directory" description="Manage user accounts, roles, and permissions">
-            <Suspense fallback={<SettingsLoadingSkeleton />}>
-              <UserManagement />
-            </Suspense>
-          </SettingsCard>
+          <Suspense fallback={<SettingsLoadingSkeleton />}>
+            <UserManagement />
+          </Suspense>
         </TabsContent>
 
         <TabsContent value="access" className="mt-6 space-y-6">
@@ -143,6 +146,18 @@ const AdminSettingsPage = ({ defaultSection }: AdminSettingsPageProps) => {
               <BackupRestoreSettings />
             </Suspense>
           </SettingsCard>
+        </TabsContent>
+
+        <TabsContent value="cleanup" className="mt-6 space-y-4">
+          <Suspense fallback={<SettingsLoadingSkeleton />}>
+            <DatabaseCleanupPanel />
+          </Suspense>
+        </TabsContent>
+
+        <TabsContent value="currency" className="mt-6 space-y-4">
+          <Suspense fallback={<SettingsLoadingSkeleton />}>
+            <CurrencyConverterCard />
+          </Suspense>
         </TabsContent>
 
         <TabsContent value="compliance" className="mt-6 space-y-6">

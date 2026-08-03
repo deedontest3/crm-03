@@ -5,14 +5,21 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { CalendarIcon } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
+import { CalendarIcon, ChevronDown } from "lucide-react";
 import { format } from "date-fns";
+import { DATE_DISPLAY_FORMAT, DATE_DISPLAY_PLACEHOLDER, parseDealDate, toISODate } from "@/lib/dealDate";
+import { DEAL_DATE_FIELDS, getDateBounds } from "@/lib/dealDateValidation";
+import { useDealFormData } from "@/components/deal-form/DealFormContext";
 import { cn } from "@/lib/utils";
-import { Deal } from "@/types/deal";
+
+import { Deal, STAGE_PROBABILITY, BU_OPTIONS, type BUOption, type DealStage } from "@/types/deal";
 import { ContactSearchableDropdown, Contact } from "@/components/ContactSearchableDropdown";
 import { AccountSearchableDropdown } from "@/components/AccountSearchableDropdown";
+import { LeadOwnerDropdown } from "@/components/deal-form/LeadOwnerDropdown";
 import { supabase } from "@/integrations/supabase/client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { useUserDisplayNames } from "@/hooks/useUserDisplayNames";
 
 interface FormFieldRendererProps {
@@ -21,11 +28,23 @@ interface FormFieldRendererProps {
   onChange: (field: string, value: any) => void;
   onContactSelect?: (contact: Contact) => void;
   error?: string;
+  required?: boolean;
 }
 
-export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, error }: FormFieldRendererProps) => {
+export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, error, required }: FormFieldRendererProps) => {
+  const dealFormData = useDealFormData();
   const [leadOwnerIds, setLeadOwnerIds] = useState<string[]>([]);
   const { displayNames, loading } = useUserDisplayNames(leadOwnerIds);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+
+  // Auto-size textarea to match input height when empty, expand when content overflows.
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value]);
 
   useEffect(() => {
     if (field === 'lead_owner') {
@@ -48,7 +67,7 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
       }
 
       // Get unique user IDs
-      const uniqueUserIds = Array.from(new Set(deals.map(deal => deal.created_by).filter(Boolean)));
+      const uniqueUserIds = Array.from(new Set((deals as any[]).map((deal: any) => deal.created_by).filter(Boolean))) as string[];
       setLeadOwnerIds(uniqueUserIds);
     } catch (error) {
       console.error('Error in fetchLeadOwners:', error);
@@ -65,23 +84,25 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
       priority: 'Priority',
       probability: 'Probability (%)',
       internal_comment: 'Internal Comment',
-      expected_closing_date: 'Expected Closing Date',
+      expected_closing_date: 'Target Closure date',
       customer_need: 'Customer Need',
       customer_challenges: 'Customer Challenges',
+      current_solution: 'Current Solution',
       relationship_strength: 'Relationship Strength',
       budget: 'Budget',
       is_recurring: 'Is Recurring?',
       project_type: 'Project Type',
       duration: 'Duration (months)',
       revenue: 'Revenue',
-      start_date: 'Start Date',
-      end_date: 'End Date',
+      start_date: 'Contract Project Start Date',
+      end_date: 'Project End Date',
       total_contract_value: 'Total Contract Value',
       currency_type: 'Currency Type',
       project_duration: 'Project Duration (months)',
       rfq_received_date: 'RFQ Received Date',
-      proposal_due_date: 'Proposal Due Date',
+      proposal_due_date: 'Submission Date',
       rfq_status: 'RFQ Status',
+      rfq_reference_number: 'RFQ / PO Reference Number',
       quarterly_revenue_q1: 'Q1 Revenue',
       quarterly_revenue_q2: 'Q2 Revenue',
       quarterly_revenue_q3: 'Q3 Revenue',
@@ -92,7 +113,6 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
       closing: 'Closing',
       won_reason: 'Won Reason',
       lost_reason: 'Lost Reason',
-      need_improvement: 'Need Improvement',
       drop_reason: 'Drop Reason',
       fax: 'Fax',
       business_value: 'Business Value',
@@ -100,7 +120,28 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
       signed_contract_date: 'Signed Contract Date',
       implementation_start_date: 'Implementation Start Date',
       handoff_status: 'Handoff Status',
+      bu: 'BU',
+      ai: 'AI',
+      strategic: 'Strategic',
+      po_status: 'PO Status',
+      po_number: 'PO Number',
+      expected_signing_date: 'Expected PO Signing Date',
+      verbal_approval_date: 'Verbal Approval Date',
+      hold_reason: 'Reason for Hold',
+      revise_date: 'Revise Date',
+      opportunity_summary: 'Opportunity Summary',
+      opportunity_description: 'Opportunity Description',
+      customer_objection: 'Customer Objection',
+      competition: 'Competition?',
+      competitors: 'Competitors',
+      final_tcv: 'Final TCV',
+      next_step: 'Next Step',
+      next_step_due_date: 'Next Step date',
     };
+    labels.proposal_version = 'Proposal Version';
+    labels.proposal_sent_date = 'Proposal Sent Date';
+    labels.next_follow_up_date = 'Next Follow-up Date';
+
     return labels[field] || field;
   };
 
@@ -110,35 +151,28 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
   };
 
   const handleNumericChange = (fieldName: string, inputValue: string) => {
-    console.log(`=== NUMERIC FIELD CHANGE DEBUG ===`);
-    console.log(`Field: ${fieldName}, Input value: "${inputValue}"`);
     
     if (inputValue === '' || inputValue === null || inputValue === undefined) {
-      console.log(`Setting ${fieldName} to 0 (empty input)`);
       onChange(fieldName, 0);
       return;
     }
     
     const numericValue = parseFloat(inputValue);
     if (isNaN(numericValue)) {
-      console.log(`Invalid numeric value for ${fieldName}: "${inputValue}"`);
       onChange(fieldName, 0);
       return;
     }
     
     // For revenue fields, ensure positive values
     if (fieldName.includes('revenue') && numericValue < 0) {
-      console.log(`Setting ${fieldName} to 0 (negative value not allowed)`);
       onChange(fieldName, 0);
       return;
     }
     
-    console.log(`Setting ${fieldName} to ${numericValue}`);
     onChange(fieldName, numericValue);
   };
 
   const handleContactSelect = async (contact: Contact) => {
-    console.log("Selected contact:", contact);
     
     // Auto-fill available fields based on contact data
     onChange('lead_name', contact.contact_name);
@@ -148,7 +182,6 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
     // Handle lead owner - fetch display name for the contact's owner
     const ownerUserId = contact.contact_owner;
     if (ownerUserId) {
-      console.log("Fetching display name for contact owner:", ownerUserId);
       
       try {
         const { data: functionResult, error: functionError } = await supabase.functions.invoke(
@@ -166,19 +199,20 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
         } else {
           // Fallback to direct query
           const { data: profilesData } = await supabase
-            .from('profiles')
+            .from('profiles_public' as any)
             .select('id, full_name, "Email ID"')
             .eq('id', ownerUserId)
             .single();
 
           if (profilesData) {
+            const p = profilesData as any;
             let displayName = "Unknown User";
-            if (profilesData.full_name?.trim() && 
-                !profilesData.full_name.includes('@') &&
-                profilesData.full_name !== profilesData["Email ID"]) {
-              displayName = profilesData.full_name.trim();
-            } else if (profilesData["Email ID"]) {
-              displayName = profilesData["Email ID"].split('@')[0];
+            if (p.full_name?.trim() &&
+                !p.full_name.includes('@') &&
+                p.full_name !== p["Email ID"]) {
+              displayName = p.full_name.trim();
+            } else if (p["Email ID"]) {
+              displayName = p["Email ID"].split('@')[0];
             }
             onChange('lead_owner', displayName);
           } else {
@@ -203,8 +237,16 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
   };
 
   const renderDatePicker = (fieldName: string, dateValue: any) => {
-    const date = dateValue ? new Date(dateValue) : undefined;
-    
+    const date = parseDealDate(dateValue) ?? undefined;
+    // No days are disabled — any past or future date can be picked. Ordering
+    // inconsistencies are surfaced as an inline message instead.
+    const bounds =
+      dealFormData && DEAL_DATE_FIELDS.has(fieldName)
+        ? getDateBounds(fieldName, dealFormData as Record<string, any>)
+        : {};
+
+
+
     return (
       <Popover>
         <PopoverTrigger asChild>
@@ -212,27 +254,26 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
             variant="outline"
             className={cn(
               "w-full justify-start text-left font-normal",
-              !date && "text-muted-foreground"
+              !date && "text-muted-foreground",
+              error && "border-destructive"
             )}
           >
             <CalendarIcon className="mr-2 h-4 w-4" />
-            {date ? format(date, "PPP") : <span>Pick a date</span>}
+            {date ? format(date, DATE_DISPLAY_FORMAT) : <span>{DATE_DISPLAY_PLACEHOLDER}</span>}
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-auto p-0" align="start">
           <Calendar
             mode="single"
             selected={date}
+            defaultMonth={date ?? bounds.min ?? bounds.max ?? new Date()}
             onSelect={(selectedDate) => {
               if (selectedDate) {
-                const formattedDate = format(selectedDate, "yyyy-MM-dd");
-                console.log(`Date field ${fieldName} update: setting to ${formattedDate}`);
-                onChange(fieldName, formattedDate);
+                onChange(fieldName, toISODate(selectedDate));
               } else {
                 onChange(fieldName, '');
               }
             }}
-            disabled={(date) => date > new Date()} // Disable future dates
             initialFocus
             className={cn("p-3 pointer-events-auto")}
           />
@@ -240,6 +281,8 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
       </Popover>
     );
   };
+
+
 
   const renderField = () => {
     switch (field) {
@@ -264,10 +307,10 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
 
       case 'lead_owner':
         return (
-          <Input
+          <LeadOwnerDropdown
             value={getStringValue(value)}
-            onChange={(e) => onChange(field, e.target.value)}
-            placeholder="Enter lead owner name..."
+            onValueChange={(val) => onChange(field, val)}
+            placeholder="Select lead owner..."
           />
         );
 
@@ -290,27 +333,22 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
           </Select>
         );
 
-      case 'probability':
+      case 'probability': {
+        const pct = typeof value === 'number' ? value : 0;
         return (
-          <Select
-            value={value ? value.toString() : ''}
-            onValueChange={(val) => {
-              console.log(`Probability update: setting to ${val}`);
-              onChange(field, parseInt(val));
-            }}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Select probability" />
-            </SelectTrigger>
-            <SelectContent>
-              {[10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(percent => (
-                <SelectItem key={percent} value={percent.toString()}>
-                  {percent}%
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="flex items-center gap-3 h-10 px-3 rounded-md border border-input bg-muted/30">
+            <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+              <div
+                className="h-full bg-primary transition-all"
+                style={{ width: `${Math.max(pct, 0)}%` }}
+              />
+            </div>
+            <span className="text-sm font-medium tabular-nums w-12 text-right">{pct}%</span>
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">auto</span>
+          </div>
         );
+      }
+
 
       case 'region':
         return (
@@ -357,7 +395,6 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
           <Select
             value={value?.toString() || ''}
             onValueChange={(val) => {
-              console.log(`${field} update: setting to ${val}`);
               onChange(field, val);
             }}
           >
@@ -397,14 +434,14 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
         return (
           <Input
             type="number"
-            step="0.01"
+            step="1"
             min="0"
-            value={getStringValue(value)}
+            value={getStringValue(value).replace(/[^0-9.\-]/g, '')}
             onChange={(e) => {
-              console.log(`Budget update: setting to ${e.target.value}`);
-              handleNumericChange(field, e.target.value);
+              const cleaned = e.target.value.replace(/[^0-9.\-]/g, '');
+              onChange(field, cleaned);
             }}
-            placeholder="Enter budget in euros..."
+            placeholder="0"
           />
         );
 
@@ -413,7 +450,6 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
           <Select
             value={value?.toString() || ''}
             onValueChange={(val) => {
-              console.log(`Is recurring update: setting to ${val}`);
               onChange(field, val);
             }}
           >
@@ -434,7 +470,11 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
         return (
           <Select
             value={value?.toString() || 'EUR'}
-            onValueChange={(val) => onChange(field, val)}
+            onValueChange={(val) => {
+              onChange(field, val);
+              // Mark currency as manually set so account selection won't overwrite it.
+              onChange('__currency_manually_set' as any, true);
+            }}
           >
             <SelectTrigger>
               <SelectValue placeholder="Select currency" />
@@ -477,7 +517,6 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
           <Select
             value={value?.toString() || ''}
             onValueChange={(val) => {
-              console.log(`Handoff status update: setting to ${val}`);
               onChange(field, val);
             }}
           >
@@ -496,26 +535,22 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
 
       case 'signed_contract_date':
       case 'implementation_start_date':
-        return renderDatePicker(field, value);
-
       case 'expected_closing_date':
       case 'start_date':
       case 'end_date':
       case 'rfq_received_date':
       case 'proposal_due_date':
-        return (
-          <Input
-            type="date"
-            value={getStringValue(value)}
-            onChange={(e) => {
-              console.log(`Date field ${field} update: setting to ${e.target.value}`);
-              onChange(field, e.target.value);
-            }}
-          />
-        );
+      case 'expected_signing_date':
+      case 'verbal_approval_date':
+      case 'revise_date':
+      case 'next_step_due_date':
+      case 'proposal_sent_date':
+      case 'next_follow_up_date':
+        return renderDatePicker(field, value);
+
 
       case 'total_contract_value':
-      case 'project_duration':
+      case 'final_tcv':
         return (
           <Input
             type="number"
@@ -523,10 +558,22 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
             min="0"
             value={getStringValue(value)}
             onChange={(e) => {
-              console.log(`RFQ numeric field ${field} update: setting to ${e.target.value}`);
               handleNumericChange(field, e.target.value);
             }}
-            placeholder={field === 'project_duration' ? 'Enter duration in months...' : 'Enter value...'}
+            placeholder={'Enter value...'}
+          />
+        );
+
+      case 'project_duration':
+        return (
+          <Input
+            type="number"
+            value={getStringValue(value)}
+            readOnly
+            disabled
+            tabIndex={-1}
+            className="bg-muted/40 cursor-not-allowed"
+            placeholder="Auto-calculated from start & end date"
           />
         );
 
@@ -541,7 +588,6 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
             min="0"
             value={getStringValue(value)}
             onChange={(e) => {
-              console.log(`Revenue field ${field} update: setting to ${e.target.value}`);
               handleNumericChange(field, e.target.value);
             }}
             placeholder="Enter quarterly revenue..."
@@ -556,7 +602,6 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
             min="0"
             value={getStringValue(value)}
             onChange={(e) => {
-              console.log(`Total revenue field ${field} update: setting to ${e.target.value}`);
               handleNumericChange(field, e.target.value);
             }}
             placeholder="Enter total revenue..."
@@ -573,21 +618,34 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
           />
         );
 
+      case 'next_step':
       case 'internal_comment':
       case 'action_items':
-      case 'closing':
+      case 'current_solution':
       case 'won_reason':
       case 'lost_reason':
-      case 'need_improvement':
       case 'drop_reason':
+      case 'opportunity_summary':
+      case 'opportunity_description':
+      case 'customer_objection':
+      case 'competitors':
         return (
           <Textarea
+            ref={textareaRef}
             value={getStringValue(value)}
             onChange={(e) => {
-              console.log(`Textarea field ${field} update: setting to ${e.target.value}`);
               onChange(field, e.target.value);
+              const el = e.target as HTMLTextAreaElement;
+              el.style.height = 'auto';
+              el.style.height = `${el.scrollHeight}px`;
             }}
-            rows={3}
+            onInput={(e) => {
+              const el = e.currentTarget;
+              el.style.height = 'auto';
+              el.style.height = `${el.scrollHeight}px`;
+            }}
+            rows={1}
+            className="h-10 min-h-10 resize-none overflow-hidden py-2 leading-tight"
             placeholder={`Enter ${getFieldLabel(field).toLowerCase()}...`}
           />
         );
@@ -602,6 +660,150 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
           />
         );
 
+      case 'bu': {
+        const selected: BUOption[] = Array.isArray(value) ? value : [];
+        const toggle = (opt: BUOption) => {
+          const next = selected.includes(opt)
+            ? selected.filter((v) => v !== opt)
+            : [...selected, opt];
+          onChange(field, next);
+        };
+        return (
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full justify-between font-normal"
+              >
+                <div className="flex flex-wrap gap-1">
+                  {selected.length === 0 ? (
+                    <span className="text-muted-foreground">Select BU...</span>
+                  ) : (
+                    selected.map((s) => (
+                      <Badge key={s} variant="secondary" className="text-xs">
+                        {s}
+                      </Badge>
+                    ))
+                  )}
+                </div>
+                <ChevronDown className="h-4 w-4 opacity-50 shrink-0" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-2" align="start">
+              <div className="space-y-1">
+                {BU_OPTIONS.map((opt) => (
+                  <label
+                    key={opt}
+                    className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-accent cursor-pointer"
+                  >
+                    <Checkbox
+                      checked={selected.includes(opt)}
+                      onCheckedChange={() => toggle(opt)}
+                    />
+                    <span className="text-sm">{opt}</span>
+                  </label>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
+        );
+      }
+
+      case 'ai':
+      case 'strategic':
+        return (
+          <Select
+            value={value?.toString() || ''}
+            onValueChange={(val) => onChange(field, val)}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder={`Select ${getFieldLabel(field)}`} />
+            </SelectTrigger>
+            <SelectContent>
+              {['Yes', 'No'].map((opt) => (
+                <SelectItem key={opt} value={opt}>
+                  {opt}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        );
+
+      case 'competition':
+      case 'po_status':
+      case 'current_status':
+      case 'closing': {
+        const optionsMap: Record<string, string[]> = {
+          competition: ['Yes', 'No'],
+          po_status: ['Not Required', 'Awaiting PO', 'In Process', 'Received'],
+          current_status: [
+            'Proposal Sent',
+            'Proposal Reviewed',
+            'Customer Questions',
+            'Commercial Discussion',
+            'Technical Clarification',
+            'Waiting for Customer',
+            'Internal Approval',
+            'Revision Requested',
+            'Final Evaluation',
+          ],
+          closing: ['On Track', 'Ready to Close', 'Pushed', 'Slipping', 'At Risk'],
+        };
+        const opts = optionsMap[field] || [];
+        return (
+          <Select
+            value={value?.toString() || ''}
+            onValueChange={(val) => onChange(field, val)}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder={`Select ${getFieldLabel(field).toLowerCase()}`} />
+            </SelectTrigger>
+            <SelectContent>
+              {opts.map((opt) => (
+                <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        );
+      }
+      case 'hold_reason': {
+        const opts = ['Budget Freeze', 'Project Delayed', 'Waiting Approval', 'Procurement Delay', 'Technical Review', 'Resource Constraint', 'Customer Request', 'Other'];
+        return (
+          <Select
+            value={getStringValue(value)}
+            onValueChange={(val) => onChange(field, val)}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Select reason for hold" />
+            </SelectTrigger>
+            <SelectContent>
+              {opts.map((opt) => (
+                <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        );
+      }
+
+
+      case 'proposal_version':
+        return (
+          <Select
+            value={value?.toString() || ''}
+            onValueChange={(val) => onChange(field, val)}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Select proposal version" />
+            </SelectTrigger>
+            <SelectContent>
+              {['Version 1', 'Version 2', 'Version 3', 'Version 4', 'Version 5'].map((opt) => (
+                <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        );
+
       default:
         return (
           <Input
@@ -614,8 +816,19 @@ export const FormFieldRenderer = ({ field, value, onChange, onContactSelect, err
   };
 
   return (
-    <div className="space-y-2">
-      <Label>{getFieldLabel(field)}</Label>
+    <div
+      data-field={field}
+      aria-invalid={error ? true : undefined}
+      className={cn(
+        "space-y-1",
+        error &&
+          "[&_input]:border-destructive [&_textarea]:border-destructive [&_button[role=combobox]]:border-destructive [&_[data-radix-popover-trigger]]:border-destructive"
+      )}
+    >
+      <Label className={cn(error && "text-destructive")}>
+        {getFieldLabel(field)}
+        {required && <span className="text-destructive ml-0.5" aria-hidden="true">*</span>}
+      </Label>
       {renderField()}
       {error && (
         <p className="text-sm text-destructive">{error}</p>

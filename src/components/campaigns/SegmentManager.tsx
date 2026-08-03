@@ -49,7 +49,7 @@ export function SegmentManager({ campaignId, withChrome = true }: Props) {
   const [showCombine, setShowCombine] = useState(false);
   const [showBuilder, setShowBuilder] = useState(false);
 
-  const opts = useAudienceOptions(filters.regions);
+  const opts = useAudienceOptions(filters.regions, filters.industries, filters.positions);
 
   const { data: segments = [] } = useQuery({
     queryKey: ["campaign-segments", campaignId],

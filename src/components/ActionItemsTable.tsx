@@ -139,9 +139,7 @@ export function ActionItemsTable({
     }
   };
   const getSortIcon = (field: string) => {
-    if (sortField !== field) {
-      return <ArrowUpDown className="w-3 h-3 text-muted-foreground/60" />;
-    }
+    if (sortField !== field) return null;
     return sortDirection === 'asc' ? <ArrowUp className="w-3 h-3 text-foreground" /> : <ArrowDown className="w-3 h-3 text-foreground" />;
   };
 
@@ -222,7 +220,7 @@ export function ActionItemsTable({
         .update({
           ...dealData,
           modified_at: new Date().toISOString()
-        })
+        } as any)
         .eq('id', selectedDeal.id);
       
       if (!error) {
@@ -458,7 +456,7 @@ export function ActionItemsTable({
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <button
-                            onClick={e => { e.stopPropagation(); navigate(`/campaigns/${item.module_id}?tab=tasks`); }}
+                            onClick={e => { e.stopPropagation(); navigate(`/campaigns/${item.module_id}?tab=actionItems`); }}
                             className="h-7 px-2 flex items-center gap-1 rounded hover:bg-muted/50 text-primary mx-auto"
                           >
                             <Megaphone className="h-3.5 w-3.5" />

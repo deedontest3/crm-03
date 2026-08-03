@@ -3,7 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
-import { Loader2 } from "lucide-react";
+import { AppLoader } from "@/components/ui/loader";
 
 interface Props {
   open: boolean;
@@ -99,7 +99,7 @@ export function CampaignSequenceDryRunModal({ open, onOpenChange, campaignId, en
             <>
               <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={running}>Cancel</Button>
               <Button onClick={handleRun} disabled={running || enabledStepCount === 0}>
-                {running && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
+                {running && <AppLoader variant="inline" className="mr-1.5" />}
                 Run simulation
               </Button>
             </>

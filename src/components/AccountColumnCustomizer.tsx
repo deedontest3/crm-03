@@ -2,6 +2,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { Lock, RotateCcw } from "lucide-react";
 
 export interface AccountColumnConfig {
   field: string;
@@ -15,6 +16,8 @@ interface AccountColumnCustomizerProps {
   onOpenChange: (open: boolean) => void;
   columns: AccountColumnConfig[];
   onColumnsChange: (columns: AccountColumnConfig[]) => void;
+  /** Optional — when provided, a "Reset to defaults" button appears. */
+  defaultColumns?: AccountColumnConfig[];
 }
 
 export const AccountColumnCustomizer = ({
@@ -22,6 +25,7 @@ export const AccountColumnCustomizer = ({
   onOpenChange,
   columns,
   onColumnsChange,
+  defaultColumns,
 }: AccountColumnCustomizerProps) => {
   const handleToggleColumn = (field: string) => {
     const updated = columns.map(col =>
@@ -52,32 +56,47 @@ export const AccountColumnCustomizer = ({
         </DialogHeader>
 
         <div className="space-y-4">
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <Button variant="outline" size="sm" onClick={handleShowAll}>
               Show All
             </Button>
             <Button variant="outline" size="sm" onClick={handleHideAll}>
               Hide All
             </Button>
+            {defaultColumns && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onColumnsChange(defaultColumns)}
+                className="gap-1 ml-auto"
+              >
+                <RotateCcw className="h-3.5 w-3.5" /> Reset to defaults
+              </Button>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            {columns.map((column) => (
-              <div key={column.field} className="flex items-center space-x-2">
-                <Checkbox
-                  id={column.field}
-                  checked={column.visible}
-                  onCheckedChange={() => handleToggleColumn(column.field)}
-                  disabled={column.field === 'account_name' || column.field === 'status'} // Always show name and status
-                />
-                <Label
-                  htmlFor={column.field}
-                  className="text-sm font-normal cursor-pointer"
-                >
-                  {column.label}
-                </Label>
-              </div>
-            ))}
+            {columns.map((column) => {
+              const locked = column.field === 'account_name' || column.field === 'status';
+              return (
+                <div key={column.field} className="flex items-center space-x-2">
+                  <Checkbox
+                    id={column.field}
+                    checked={column.visible}
+                    onCheckedChange={() => handleToggleColumn(column.field)}
+                    disabled={locked}
+                  />
+                  <Label
+                    htmlFor={column.field}
+                    className={`text-sm font-normal cursor-pointer flex items-center gap-1 ${locked ? 'text-muted-foreground' : ''}`}
+                    title={locked ? 'Required column — always visible' : undefined}
+                  >
+                    {column.label}
+                    {locked && <Lock className="h-3 w-3" aria-label="Always visible" />}
+                  </Label>
+                </div>
+              );
+            })}
           </div>
         </div>
       </DialogContent>

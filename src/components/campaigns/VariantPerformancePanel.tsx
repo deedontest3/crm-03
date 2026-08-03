@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
-import { Trophy, Beaker, Info, ArrowUpRight, Loader2 } from "lucide-react";
+import { Trophy, Beaker, Info, ArrowUpRight } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
 interface Props { campaignId: string }
@@ -154,28 +154,14 @@ export function VariantPerformancePanel({ campaignId }: Props) {
   }, [data]);
 
   if (isLoading) {
-    return (
-      <Card className="border-border/60 shadow-sm">
-        <CardContent className="p-6 flex items-center justify-center text-muted-foreground text-sm">
-          <Loader2 className="h-4 w-4 animate-spin mr-2" /> Loading variant data…
-        </CardContent>
-      </Card>
-    );
+    // Hide while loading — analytics already shows skeletons elsewhere.
+    return null;
   }
 
   if (groups.length === 0) {
-    return (
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="p-4 pb-2">
-          <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Beaker className="h-4 w-4 text-violet-500" /> A/B Variant Performance
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-4 pt-2 text-xs text-muted-foreground">
-          No A/B variants yet. Add a B variant to any email template to compare open and reply rates.
-        </CardContent>
-      </Card>
-    );
+    // Self-hide when there is nothing to compare. The empty state was pure
+    // noise in single-template campaigns.
+    return null;
   }
 
   return (

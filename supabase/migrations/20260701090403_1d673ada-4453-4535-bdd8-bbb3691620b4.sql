@@ -1,0 +1,1 @@
+REVOKE EXECUTE ON FUNCTION public.enforce_won_stage_lock() FROM PUBLIC, anon, authenticated;

@@ -32,18 +32,26 @@ export function useCampaignSettings() {
     queryKey: ["campaign-settings"],
     staleTime: 10 * 60 * 1000,
     queryFn: async (): Promise<Record<SettingKey, string>> => {
-      const { data, error } = await supabase
-        .from("campaign_settings")
-        .select("setting_key, setting_value")
-        .in("setting_key", SETTINGS_KEYS as unknown as string[]);
-      if (error) throw error;
+      // Use the security-definer RPC so non-admin users (who can no longer
+      // SELECT from campaign_settings directly) still get the whitelisted
+      // values they need.
       const map: Record<string, string> = {};
-      for (const row of data || []) {
-        if (row?.setting_key) map[row.setting_key] = row.setting_value ?? "";
-      }
+      await Promise.all(
+        SETTINGS_KEYS.map(async (key) => {
+          const { data, error } = await (supabase as any).rpc("get_campaign_setting", { _key: key });
+          if (error) {
+            console.warn(`[campaign-settings] failed to read ${key}:`, error.message);
+            return;
+          }
+          if (typeof data === "string" && data.length > 0) {
+            map[key] = data;
+          }
+        }),
+      );
       return { ...DEFAULTS, ...map } as Record<SettingKey, string>;
     },
   });
+
 
   const raw = query.data ?? DEFAULTS;
   const settings: CampaignSettings = {

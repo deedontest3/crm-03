@@ -1,15 +1,17 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
-import { ArrowUpDown, ArrowUp, ArrowDown, ExternalLink, MoreHorizontal, Pencil, Trash2, Users } from "lucide-react";
+import { ArrowUp, ArrowDown, ExternalLink, MoreHorizontal, Pencil, Trash2, Users, Briefcase } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { AccountColumnConfig } from "../AccountColumnCustomizer";
 import { format } from "date-fns";
 import { useUserDisplayNames } from "@/hooks/useUserDisplayNames";
 import { LinkedContactsDialog } from "../LinkedContactsDialog";
+import { LinkedDealsDialog } from "../LinkedDealsDialog";
 import { cn } from "@/lib/utils";
 import { useAccountColumnWidths } from "@/hooks/useAccountColumnWidths";
+import { AppLoader } from "@/components/ui/loader";
 
 interface Account {
   id: string;
@@ -46,6 +48,7 @@ interface AccountTableBodyProps {
   sortDirection: 'asc' | 'desc';
   onSort: (field: string) => void;
   contactCounts?: Record<string, number>;
+  dealCounts?: Record<string, number>;
 }
 
 const getStatusDotColor = (status: string | undefined) => {
@@ -69,10 +72,12 @@ const getWebsiteDisplay = (value: string): string => {
 
 export const AccountTableBody = ({
   loading, pageAccounts, visibleColumns, selectedAccounts, setSelectedAccounts,
-  onEdit, onDelete, sortField, sortDirection, onSort, contactCounts = {},
+  onEdit, onDelete, sortField, sortDirection, onSort, contactCounts = {}, dealCounts = {},
 }: AccountTableBodyProps) => {
-  const [linkedAccountName, setLinkedAccountName] = useState<string | null>(null);
+  const [linkedAccount, setLinkedAccount] = useState<{ id: string; account_name: string } | null>(null);
   const [showLinkedDialog, setShowLinkedDialog] = useState(false);
+  const [linkedDealsAccount, setLinkedDealsAccount] = useState<{ id: string; account_name: string } | null>(null);
+  const [showLinkedDealsDialog, setShowLinkedDealsDialog] = useState(false);
   const { columnWidths, updateColumnWidth } = useAccountColumnWidths();
 
   // Column resize state
@@ -82,7 +87,7 @@ export const AccountTableBody = ({
 
   // Column resize handlers
   const handleMouseDown = (e: React.MouseEvent, field: string) => {
-    if (field === 'linked_contacts') return; // Don't allow resizing linked contacts column
+    if (field === 'linked_contacts' || field === 'linked_deals') return; // Don't allow resizing computed columns
     setIsResizing(field);
     setStartX(e.clientX);
     setStartWidth(columnWidths[field] || 120);
@@ -112,16 +117,28 @@ export const AccountTableBody = ({
     }
   }, [isResizing, handleMouseMove, handleMouseUp]);
 
-  const userIds = pageAccounts.reduce<string[]>((acc, account) => {
-    if (account.account_owner) acc.push(account.account_owner);
-    if (account.created_by) acc.push(account.created_by);
-    if (account.modified_by) acc.push(account.modified_by);
-    return acc;
-  }, []);
+  const userIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const account of pageAccounts) {
+      if (account.account_owner) set.add(account.account_owner);
+      if (account.created_by) set.add(account.created_by);
+      if (account.modified_by) set.add(account.modified_by);
+    }
+    return Array.from(set);
+  }, [pageAccounts]);
   const { displayNames } = useUserDisplayNames(userIds);
 
   const handleSelectAll = (checked: boolean) => {
-    setSelectedAccounts(checked ? pageAccounts.map(a => a.id) : []);
+    const pageIds = pageAccounts.map(a => a.id);
+    setSelectedAccounts(prev => {
+      if (checked) {
+        // Add this page's ids to the existing cross-page selection.
+        return Array.from(new Set([...prev, ...pageIds]));
+      }
+      // Deselect only this page's ids, keep selections from other pages.
+      const pageSet = new Set(pageIds);
+      return prev.filter(id => !pageSet.has(id));
+    });
   };
 
   const handleSelectOne = (id: string, checked: boolean) => {
@@ -133,19 +150,31 @@ export const AccountTableBody = ({
     return displayNames[userId] || 'Loading...';
   };
 
-  const handleLinkedContactsClick = (accountName: string) => {
-    setLinkedAccountName(accountName);
+  const handleLinkedContactsClick = (account: Account) => {
+    setLinkedAccount({ id: account.id, account_name: account.account_name });
     setShowLinkedDialog(true);
   };
 
   const formatCellValue = (account: Account, field: string) => {
     if (field === 'linked_contacts') {
-      const count = contactCounts[account.account_name] || 0;
+      const count = contactCounts[account.id] || 0;
       return (
         <button
-          onClick={() => handleLinkedContactsClick(account.account_name)}
+          onClick={() => handleLinkedContactsClick(account)}
           className="inline-flex items-center justify-center min-w-[2rem] px-2 py-0.5 rounded-full text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer"
           title={`View ${count} linked contact${count !== 1 ? 's' : ''}`}
+        >
+          {count}
+        </button>
+      );
+    }
+    if (field === 'linked_deals') {
+      const count = dealCounts[account.id] || 0;
+      return (
+        <button
+          onClick={() => { setLinkedDealsAccount({ id: account.id, account_name: account.account_name }); setShowLinkedDealsDialog(true); }}
+          className="inline-flex items-center justify-center min-w-[2rem] px-2 py-0.5 rounded-full text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer"
+          title={`View ${count} linked deal${count !== 1 ? 's' : ''}`}
         >
           {count}
         </button>
@@ -203,20 +232,23 @@ export const AccountTableBody = ({
   };
 
   const getSortIcon = (field: string) => {
-    if (sortField !== field) return <ArrowUpDown className="ml-1 h-3 w-3 text-muted-foreground/60" />;
+    if (sortField !== field) return null;
     return sortDirection === 'asc' 
       ? <ArrowUp className="ml-1 h-3 w-3 text-foreground" />
       : <ArrowDown className="ml-1 h-3 w-3 text-foreground" />;
   };
 
-  const allSelected = pageAccounts.length > 0 && selectedAccounts.length === pageAccounts.length;
-  const someSelected = selectedAccounts.length > 0 && selectedAccounts.length < pageAccounts.length;
+  const selectedSet = new Set(selectedAccounts);
+  const selectedOnPage = pageAccounts.reduce((n, a) => n + (selectedSet.has(a.id) ? 1 : 0), 0);
+  const allSelected = pageAccounts.length > 0 && selectedOnPage === pageAccounts.length;
+  const someSelected = selectedOnPage > 0 && selectedOnPage < pageAccounts.length;
 
-  // Client-side sort for linked_contacts (count comes from a separate query)
-  const displayAccounts = sortField === 'linked_contacts'
+  // Client-side sort for computed columns (count comes from a separate query)
+  const displayAccounts = (sortField === 'linked_contacts' || sortField === 'linked_deals')
     ? [...pageAccounts].sort((a, b) => {
-        const ca = contactCounts[a.account_name] || 0;
-        const cb = contactCounts[b.account_name] || 0;
+        const counts = sortField === 'linked_contacts' ? contactCounts : dealCounts;
+        const ca = counts[a.id] || 0;
+        const cb = counts[b.id] || 0;
         return sortDirection === 'asc' ? ca - cb : cb - ca;
       })
     : pageAccounts;
@@ -239,13 +271,22 @@ export const AccountTableBody = ({
                     sortField === column.field && "bg-accent"
                   )}
                   style={{ 
-                    width: column.field === 'linked_contacts' ? '80px' : column.field === 'description' ? '30%' : `${columnWidths[column.field] || 120}px`,
+                    width: (column.field === 'linked_contacts' || column.field === 'linked_deals') ? (column.field === 'linked_deals' ? '110px' : '80px') : column.field === 'description' ? '30%' : `${columnWidths[column.field] || 120}px`,
                     minWidth: column.field === 'account_name' ? '150px' : column.field === 'description' ? '200px' : '60px'
                   }}
                 >
-                  {column.field === 'linked_contacts' ? (
-                    <Button variant="ghost" size="sm" className="h-7 mx-auto flex text-sm font-bold hover:bg-transparent px-2" onClick={() => onSort(column.field)}>
+                  {(column.field === 'linked_contacts' || column.field === 'linked_deals') ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 mx-auto flex items-center gap-1 text-sm font-bold hover:bg-transparent px-2"
+                      onClick={() => onSort(column.field)}
+                      title="Sorts the current page only"
+                    >
                       {column.label}
+                      {sortField === column.field && (
+                        <span className="text-[9px] uppercase tracking-wide text-muted-foreground font-normal">page</span>
+                      )}
                       {getSortIcon(column.field)}
                     </Button>
                   ) : (
@@ -255,7 +296,7 @@ export const AccountTableBody = ({
                     </Button>
                   )}
                   {/* Resize handle */}
-                  {column.field !== 'linked_contacts' && (
+                  {column.field !== 'linked_contacts' && column.field !== 'linked_deals' && (
                     <div 
                       className="absolute right-0 top-0 w-1 h-full cursor-col-resize hover:bg-primary/40 active:bg-primary/60" 
                       onMouseDown={e => handleMouseDown(e, column.field)} 
@@ -269,8 +310,8 @@ export const AccountTableBody = ({
         <TableBody>
           {loading ? (
             <TableRow>
-              <TableCell colSpan={visibleColumns.length + 2} className="text-center py-6">
-                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary mx-auto"></div>
+              <TableCell colSpan={visibleColumns.length + 2} className="p-0 h-[60vh]">
+                <AppLoader variant="panel" label="Loading accounts…" />
               </TableCell>
             </TableRow>
           ) : pageAccounts.length === 0 ? (
@@ -299,15 +340,16 @@ export const AccountTableBody = ({
                       column.field === 'account_name' && 'min-w-[150px] max-w-[250px]',
                       column.field === 'description' && 'min-w-[200px] max-w-[350px]',
                       column.field === 'linked_contacts' && 'w-[80px] text-center',
+                      column.field === 'linked_deals' && 'w-[110px] text-center',
                       column.field === 'account_owner' && 'whitespace-nowrap',
-                      !['account_name', 'description', 'linked_contacts', 'account_owner'].includes(column.field) && 'max-w-[180px] truncate'
+                      !['account_name', 'description', 'linked_contacts', 'linked_deals', 'account_owner'].includes(column.field) && 'max-w-[180px] truncate'
                     )}
                   >
                     {formatCellValue(account, column.field)}
                   </TableCell>
                 ))}
                 <TableCell className="py-3 px-2">
-                  <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-150 flex justify-center">
+                  <div className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-150 flex justify-center">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon" className="h-8 w-8 p-0">
@@ -319,9 +361,13 @@ export const AccountTableBody = ({
                           <Pencil className="h-4 w-4 mr-2" />
                           Edit
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => { setLinkedAccountName(account.account_name); setShowLinkedDialog(true); }}>
+                        <DropdownMenuItem onClick={() => { setLinkedAccount({ id: account.id, account_name: account.account_name }); setShowLinkedDialog(true); }}>
                           <Users className="h-4 w-4 mr-2" />
                           View Linked Contacts
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => { setLinkedDealsAccount({ id: account.id, account_name: account.account_name }); setShowLinkedDealsDialog(true); }}>
+                          <Briefcase className="h-4 w-4 mr-2" />
+                          View Linked Deals
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem onClick={() => onDelete(account.id)} className="text-destructive focus:text-destructive">
@@ -342,7 +388,12 @@ export const AccountTableBody = ({
       <LinkedContactsDialog
         open={showLinkedDialog}
         onOpenChange={setShowLinkedDialog}
-        accountName={linkedAccountName}
+        account={linkedAccount}
+      />
+      <LinkedDealsDialog
+        open={showLinkedDealsDialog}
+        onOpenChange={setShowLinkedDealsDialog}
+        target={linkedDealsAccount ? { kind: 'account', id: linkedDealsAccount.id, name: linkedDealsAccount.account_name } : null}
       />
     </>
   );

@@ -1,77 +1,39 @@
-import { useState, useEffect, useCallback } from 'react';
-import { supabase } from '@/integrations/supabase/client';
-import { useAuth } from '@/hooks/useAuth';
+import { usePermissions } from '@/contexts/PermissionsContext';
 
+/**
+ * Thin wrapper over usePermissions for legacy call sites.
+ * NOTE: `isAdmin` is now strict (admin role only). For "admin or super admin"
+ * checks use `isAdminOrAbove`. Administration UI should use `isSuperAdmin`.
+ */
 export const useUserRole = () => {
-  const [userRole, setUserRole] = useState<string>('user');
-  const [loading, setLoading] = useState(true);
-  const { user } = useAuth();
+  const {
+    userRole,
+    isSuperAdmin,
+    isAdmin,
+    isSalesHead,
+    isAdminOrAbove,
+    loading,
+    refreshPermissions,
+  } = usePermissions();
 
-  const fetchUserRole = useCallback(async () => {
-    if (!user) {
-      setUserRole('user');
-      setLoading(false);
-      return;
-    }
-
-    try {
-      console.log('Fetching role for user:', user.email);
-      
-      // First check user_roles table (proper role storage)
-      const { data: roleData, error } = await supabase
-        .from('user_roles')
-        .select('role')
-        .eq('user_id', user.id)
-        .maybeSingle();
-      
-      if (error) {
-        console.error('Error fetching role from user_roles:', error);
-        // Fallback to user metadata
-        const role = user.user_metadata?.role || 'user';
-        console.log('User role from metadata (fallback):', role);
-        setUserRole(role);
-      } else if (roleData) {
-        console.log('User role from user_roles table:', roleData.role);
-        setUserRole(roleData.role);
-      } else {
-        // No role in table, check metadata
-        const role = user.user_metadata?.role || 'user';
-        console.log('User role from metadata:', role);
-        setUserRole(role);
-      }
-    } catch (error) {
-      console.error('Error in fetchUserRole:', error);
-      setUserRole('user');
-    } finally {
-      setLoading(false);
-    }
-  }, [user]);
-
-  useEffect(() => {
-    fetchUserRole();
-  }, [fetchUserRole]);
-
-  const refreshRole = useCallback(async () => {
-    setLoading(true);
-    await fetchUserRole();
-  }, [fetchUserRole]);
-
-  const isAdmin = userRole === 'admin';
-  const isManager = userRole === 'manager';
-  const canEdit = isAdmin || isManager;
-  const canDelete = isAdmin;
-  const canManageUsers = isAdmin;
-  const canAccessSettings = isAdmin;
+  const canEdit = isAdminOrAbove || isSalesHead;
+  const canDelete = isAdminOrAbove;
+  // User & role management belongs to Super Admin only.
+  const canManageUsers = isSuperAdmin;
+  const canAccessSettings = isSuperAdmin;
 
   return {
     userRole,
+    isSuperAdmin,
     isAdmin,
-    isManager,
+    isSalesHead,
+    isAdminOrAbove,
+    isManager: false,
     canEdit,
     canDelete,
     canManageUsers,
     canAccessSettings,
     loading,
-    refreshRole
+    refreshRole: refreshPermissions,
   };
 };

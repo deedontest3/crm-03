@@ -93,22 +93,31 @@ export const createDuplicateChecker = (tableName: string) => {
         ? ['title', 'start_time']
         : ['deal_name'];
 
-      // Build query dynamically
-      let query = supabase.from(tableName as any).select('id');
-      
-      let hasValidFields = false;
+      // Match ANY key field, not ALL — re-importing a contact with the same
+      // email but a corrected name is still a duplicate.
+      const orClauses: string[] = [];
       keyFields.forEach(field => {
         if (record[field] && String(record[field]).trim() !== '') {
-          query = query.eq(field, String(record[field]).trim());
-          hasValidFields = true;
+          const raw = String(record[field]).trim();
+          // Escape reserved PostgREST characters in `.or()` values.
+          const safe = raw.replace(/[,()"\\]/g, '');
+          if (safe.length > 0) {
+            orClauses.push(`${field}.eq.${safe}`);
+          }
         }
       });
 
       // If no valid fields to check against, not a duplicate
-      if (!hasValidFields) {
+      if (orClauses.length === 0) {
         console.log('No valid key fields to check for duplicates');
         return false;
       }
+
+      const query = supabase
+        .from(tableName as any)
+        .select('id')
+        .or(orClauses.join(','));
+
 
       const { data, error } = await query;
       

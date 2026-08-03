@@ -6,10 +6,13 @@ import { Button } from "@/components/ui/button";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
+import { usePermissions } from "@/contexts/PermissionsContext";
 import SecurityEnhancedApp from "@/components/SecurityEnhancedApp";
 import { AppSidebar } from "@/components/AppSidebar";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
+import { AppLoader } from "@/components/ui/loader";
+import { ShieldAlert } from "lucide-react";
 
 // Eager: most-common landing pages
 import Dashboard from "./pages/Dashboard";
@@ -20,6 +23,7 @@ import CampaignDetail from "./pages/CampaignDetail";
 const Accounts = lazy(() => import("./pages/Accounts"));
 const Contacts = lazy(() => import("./pages/Contacts"));
 const DealsPage = lazy(() => import("./pages/DealsPage"));
+
 const Campaigns = lazy(() => import("./pages/Campaigns"));
 const ActionItems = lazy(() => import("./pages/ActionItems"));
 const Settings = lazy(() => import("./pages/Settings"));
@@ -39,12 +43,7 @@ const queryClient = new QueryClient({
 });
 
 const RouteFallback = () => (
-  <div className="min-h-screen flex items-center justify-center bg-background px-6">
-    <div className="flex flex-col items-center gap-3 text-center">
-      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-      <p className="text-sm font-medium text-foreground">Loading page</p>
-    </div>
-  </div>
+  <AppLoader variant="page" label="Loading workspace…" />
 );
 
 const RouteDiagnostics = () => {
@@ -130,7 +129,9 @@ const FixedSidebarLayout = ({ children }: { children: React.ReactNode }) => {
       >
         <div className={`w-full h-full min-h-0 ${needsControlledScroll ? 'overflow-hidden' : 'overflow-auto'}`}>
           <Suspense fallback={<RouteFallback />}>
-            {children}
+            <div key={location.pathname} className="animate-page-enter h-full w-full">
+              {children}
+            </div>
           </Suspense>
         </div>
       </main>
@@ -138,20 +139,50 @@ const FixedSidebarLayout = ({ children }: { children: React.ReactNode }) => {
   );
 };
 
+// Page Access Guard — checks role-based page permissions from page_permissions table
+const PageAccessGuard = ({ children }: { children: React.ReactNode }) => {
+  const location = useLocation();
+  const { loading, hasPageAccess, isSuperAdmin } = usePermissions();
+
+  if (loading) {
+    return <RouteFallback />;
+  }
+
+  // Only super admins bypass page_permissions on /settings so they can re-enable
+  // disabled pages. Regular admins go through the configurable check like
+  // everyone else — the previous hardcoded `isAdmin` bypass made the Page
+  // Access settings UI silently ineffective for the admin role.
+  const route = location.pathname;
+  const isSettings = route === '/settings' || route.startsWith('/settings/');
+  if (isSettings && isSuperAdmin) {
+    return <>{children}</>;
+  }
+
+
+
+  if (!hasPageAccess(route)) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background px-6">
+        <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm text-center">
+          <ShieldAlert className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
+          <h1 className="text-lg font-semibold text-foreground">Access Restricted</h1>
+          <p className="text-sm text-muted-foreground mt-2">
+            Your role doesn't have permission to view this page. Contact an administrator if you need access.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+};
+
 // Protected Route Component
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { user, loading } = useAuth();
 
   if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="text-center px-6">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
-          <p className="text-foreground font-medium">Restoring your workspace</p>
-          <p className="text-sm text-muted-foreground mt-1">Checking your session and loading the app shell.</p>
-        </div>
-      </div>
-    );
+    return <AppLoader variant="page" label="Restoring your workspace…" />;
   }
 
   if (!user) {
@@ -160,7 +191,7 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
 
   return (
     <FixedSidebarLayout>
-      {children}
+      <PageAccessGuard>{children}</PageAccessGuard>
     </FixedSidebarLayout>
   );
 };
@@ -170,15 +201,7 @@ const AuthRoute = ({ children }: { children: React.ReactNode }) => {
   const { user, loading } = useAuth();
 
   if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="text-center px-6">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
-          <p className="text-foreground font-medium">Preparing authentication</p>
-          <p className="text-sm text-muted-foreground mt-1">Please wait while we verify your session.</p>
-        </div>
-      </div>
-    );
+    return <AppLoader variant="page" label="Preparing sign in…" />;
   }
 
   if (user) {
@@ -200,6 +223,7 @@ const RoutedApp = () => {
         <Route path="/accounts" element={<ProtectedRoute><Accounts /></ProtectedRoute>} />
         <Route path="/contacts" element={<ProtectedRoute><Contacts /></ProtectedRoute>} />
         <Route path="/deals" element={<ProtectedRoute><DealsPage /></ProtectedRoute>} />
+        
         <Route path="/campaigns" element={<ProtectedRoute><Campaigns /></ProtectedRoute>} />
         <Route path="/campaigns/:id" element={<ProtectedRoute><CampaignDetail /></ProtectedRoute>} />
         <Route path="/action-items" element={<ProtectedRoute><ActionItems /></ProtectedRoute>} />

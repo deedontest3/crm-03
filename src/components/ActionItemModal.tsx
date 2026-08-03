@@ -31,7 +31,7 @@ import {
 } from '@/components/ui/popover';
 import { Calendar } from '@/components/ui/calendar';
 import { format } from 'date-fns';
-import { CalendarIcon, Loader2, Check, ChevronsUpDown } from 'lucide-react';
+import { CalendarIcon, Check, ChevronsUpDown } from "lucide-react";
 import { cn } from '@/lib/utils';
 import { useAllUsers } from '@/hooks/useUserDisplayNames';
 import { useModuleRecords } from '@/hooks/useModuleRecords';
@@ -43,6 +43,7 @@ import {
   ModuleType,
   CreateActionItemInput,
 } from '@/hooks/useActionItems';
+import { AppLoader } from "@/components/ui/loader";
 
 interface ActionItemModalProps {
   open: boolean;
@@ -481,7 +482,7 @@ export function ActionItemModal({
                 Cancel
               </Button>
               <Button type="submit" disabled={isSubmitting || !formData.title.trim()}>
-                {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {isSubmitting && <AppLoader variant="inline" className="mr-2" />}
                 {actionItem ? 'Update' : 'Create'}
               </Button>
             </div>

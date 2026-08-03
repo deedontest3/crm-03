@@ -9,7 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useUserRole } from "@/hooks/useUserRole";
-import { MoreHorizontal, Plus, RefreshCw, Shield, ShieldAlert, User, Key } from "lucide-react";
+import { MoreHorizontal, Plus, RefreshCw, Shield, ShieldAlert, ShieldCheck, User, Key, Briefcase } from "lucide-react";
 import { format } from "date-fns";
 import UserModal from "./UserModal";
 import EditUserModal from "./EditUserModal";
@@ -42,7 +42,7 @@ const UserManagement = () => {
   const [selectedUser, setSelectedUser] = useState<UserData | null>(null);
   const { toast } = useToast();
   const { refreshUser } = useAuth();
-  const { isAdmin, loading: roleLoading, userRole } = useUserRole();
+  const { isSuperAdmin: isAdmin, loading: roleLoading, userRole } = useUserRole();
   const { logSecurityEvent } = useSecurityAudit();
 
   console.log('UserManagement - Current user role:', userRole, 'isAdmin:', isAdmin, 'loading:', roleLoading);
@@ -80,11 +80,16 @@ const UserManagement = () => {
         }
       }
       
-      // Combine user data with roles
-      const usersWithRoles = data.users?.map((user: any) => ({
+      // Combine user data with roles and sort by name
+      const usersWithRoles = (data.users?.map((user: any) => ({
         ...user,
         role: userRoles[user.id] || 'user'
-      })) || [];
+      })) || [])
+        .sort((a: UserData, b: UserData) => {
+          const nameA = (a.user_metadata?.full_name || a.email.split('@')[0] || '').toLowerCase();
+          const nameB = (b.user_metadata?.full_name || b.email.split('@')[0] || '').toLowerCase();
+          return nameA.localeCompare(nameB);
+        });
       
       console.log('Users fetched successfully:', usersWithRoles.length);
       setUsers(usersWithRoles);
@@ -240,21 +245,36 @@ const UserManagement = () => {
 
   const getRoleBadgeVariant = useCallback((role: string) => {
     switch (role?.toLowerCase()) {
+      case 'super_admin':
       case 'admin':
-        return 'default';
+        return 'default' as const;
+      case 'sales_head':
+        return 'secondary' as const;
       default:
-        return 'outline';
+        return 'outline' as const;
     }
   }, []);
 
   const getRoleIcon = useCallback((role: string) => {
     switch (role?.toLowerCase()) {
+      case 'super_admin':
+        return <ShieldCheck className="h-3 w-3" />;
       case 'admin':
         return <Shield className="h-3 w-3" />;
+      case 'sales_head':
+        return <Briefcase className="h-3 w-3" />;
       default:
         return <User className="h-3 w-3" />;
     }
   }, []);
+
+  const getRoleLabel = (role: string) => {
+    switch (role?.toLowerCase()) {
+      case 'super_admin': return 'super admin';
+      case 'sales_head': return 'sales head';
+      default: return role || 'user';
+    }
+  };
 
   useEffect(() => {
     const loadData = async () => {
@@ -382,9 +402,9 @@ const UserManagement = () => {
                   </TableCell>
                   <TableCell>{user.email}</TableCell>
                   <TableCell>
-                    <Badge variant={getRoleBadgeVariant(user.role || 'user')} className="flex items-center gap-1 w-fit">
+                    <Badge variant={getRoleBadgeVariant(user.role || 'user')} className="flex items-center gap-1 w-fit capitalize">
                       {getRoleIcon(user.role || 'user')}
-                      {user.role || 'user'}
+                      {getRoleLabel(user.role || 'user')}
                     </Badge>
                   </TableCell>
                   <TableCell>

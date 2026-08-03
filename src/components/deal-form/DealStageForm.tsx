@@ -1,14 +1,21 @@
 
-import { Deal, DealStage } from "@/types/deal";
+import { useMemo } from "react";
+import { Deal, DealStage, DEAL_STAGES } from "@/types/deal";
 import { LeadStageForm } from "./LeadStageForm";
 import { DiscussionsStageForm } from "./DiscussionsStageForm";
 import { QualifiedStageForm } from "./QualifiedStageForm";
 import { RFQStageForm } from "./RFQStageForm";
 import { OfferedStageForm } from "./OfferedStageForm";
 import { FinalStageForm } from "./FinalStageForm";
+import { NegotiationStageForm } from "./NegotiationStageForm";
+import { VerbalApprovalStageForm } from "./VerbalApprovalStageForm";
+import { HoldStageForm } from "./HoldStageForm";
+import { DealFormDataProvider } from "./DealFormContext";
+import { recomputeDateErrors } from "@/lib/dealDateValidation";
+
 
 interface DealStageFormProps {
-  formData: Partial<Deal>;
+  formData: Partial<Deal> & { id?: string };
   onFieldChange: (field: string, value: any) => void;
   onContactSelect?: (contact: any) => void;
   fieldErrors: Record<string, string>;
@@ -24,55 +31,95 @@ export const DealStageForm = ({
   stage, 
   showPreviousStages 
 }: DealStageFormProps) => {
+  // Live cross-field date validation — merged into fieldErrors so every stage
+  // form surfaces ordering violations immediately (matches the calendar's
+  // disabled-day bounds).
+  const mergedFieldErrors = useMemo(() => {
+    const liveDateErrors = recomputeDateErrors(formData as Record<string, any>);
+    return { ...liveDateErrors, ...fieldErrors };
+  }, [formData, fieldErrors]);
+
+
   const getStageIndex = (stage: DealStage): number => {
-    const stages = ['Lead', 'Discussions', 'Qualified', 'RFQ', 'Offered', 'Won', 'Lost', 'Dropped'];
-    return stages.indexOf(stage);
+    return DEAL_STAGES.indexOf(stage);
   };
 
   const currentStageIndex = getStageIndex(stage);
-  const isFinalStage = ['Won', 'Lost', 'Dropped'].includes(stage);
+  const isFinalStage = ['Won', 'Lost', 'Dropped', 'Hold'].includes(stage);
 
   const renderStageComponent = (stageToRender: DealStage) => {
     switch (stageToRender) {
       case 'Lead':
         return (
           <LeadStageForm
+            isCurrent={stageToRender === stage}
             formData={formData}
             onFieldChange={onFieldChange}
             onContactSelect={onContactSelect}
-            fieldErrors={fieldErrors}
+            fieldErrors={mergedFieldErrors}
           />
         );
       case 'Discussions':
         return (
           <DiscussionsStageForm
+            isCurrent={stageToRender === stage}
             formData={formData}
             onFieldChange={onFieldChange}
-            fieldErrors={fieldErrors}
+            fieldErrors={mergedFieldErrors}
           />
         );
       case 'Qualified':
         return (
           <QualifiedStageForm
+            isCurrent={stageToRender === stage}
             formData={formData}
             onFieldChange={onFieldChange}
-            fieldErrors={fieldErrors}
+            fieldErrors={mergedFieldErrors}
           />
         );
       case 'RFQ':
         return (
           <RFQStageForm
+            isCurrent={stageToRender === stage}
             formData={formData}
             onFieldChange={onFieldChange}
-            fieldErrors={fieldErrors}
+            fieldErrors={mergedFieldErrors}
           />
         );
       case 'Offered':
         return (
           <OfferedStageForm
+            isCurrent={stageToRender === stage}
             formData={formData}
             onFieldChange={onFieldChange}
-            fieldErrors={fieldErrors}
+            fieldErrors={mergedFieldErrors}
+          />
+        );
+      case 'Negotiation':
+        return (
+          <NegotiationStageForm
+            isCurrent={stageToRender === stage}
+            formData={formData}
+            onFieldChange={onFieldChange}
+            fieldErrors={mergedFieldErrors}
+          />
+        );
+      case 'Verbal Approval':
+        return (
+          <VerbalApprovalStageForm
+            isCurrent={stageToRender === stage}
+            formData={formData}
+            onFieldChange={onFieldChange}
+            fieldErrors={mergedFieldErrors}
+          />
+        );
+      case 'Hold':
+        return (
+          <HoldStageForm
+            isCurrent={stageToRender === stage}
+            formData={formData}
+            onFieldChange={onFieldChange}
+            fieldErrors={mergedFieldErrors}
           />
         );
       case 'Won':
@@ -80,9 +127,10 @@ export const DealStageForm = ({
       case 'Dropped':
         return (
           <FinalStageForm
+            isCurrent={stageToRender === stage}
             formData={formData}
             onFieldChange={onFieldChange}
-            fieldErrors={fieldErrors}
+            fieldErrors={mergedFieldErrors}
             stage={stageToRender}
           />
         );
@@ -91,37 +139,38 @@ export const DealStageForm = ({
     }
   };
 
-  if (showPreviousStages) {
-    // Show all stages up to current stage
-    const stagesToShow: DealStage[] = [];
-    const allStages: DealStage[] = ['Lead', 'Discussions', 'Qualified', 'RFQ', 'Offered'];
-    
-    if (isFinalStage) {
-      // For final stages, show all previous stages plus the final stage
-      stagesToShow.push(...allStages);
-      stagesToShow.push(stage);
-    } else {
-      // For regular stages, show all stages up to current
-      for (let i = 0; i <= currentStageIndex && i < allStages.length; i++) {
-        stagesToShow.push(allStages[i]);
-      }
-    }
-
-    return (
-      <div className="space-y-6">
-        {stagesToShow.map(stageToRender => (
-          <div key={stageToRender}>
-            {renderStageComponent(stageToRender)}
-          </div>
-        ))}
-      </div>
-    );
+  // Build list of previous stages (everything before current)
+  const allStages: DealStage[] = ['Lead', 'Discussions', 'Qualified', 'RFQ', 'Offered', 'Negotiation', 'Verbal Approval'];
+  const previousStages: DealStage[] = [];
+  if (isFinalStage) {
+    previousStages.push(...allStages);
   } else {
-    // Show only current stage
-    return (
-      <div>
-        {renderStageComponent(stage)}
-      </div>
-    );
+    for (let i = 0; i < currentStageIndex && i < allStages.length; i++) {
+      previousStages.push(allStages[i]);
+    }
   }
+
+  return (
+    <DealFormDataProvider formData={formData}>
+      <div className="space-y-3">
+        <div
+          className={`grid transition-[grid-template-rows,opacity] duration-300 ease-in-out ${
+            showPreviousStages ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+          }`}
+          aria-hidden={!showPreviousStages}
+        >
+          <div className="overflow-hidden">
+            <div className="space-y-3 pb-0">
+              {previousStages.map(stageToRender => (
+                <div key={stageToRender}>{renderStageComponent(stageToRender)}</div>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div>{renderStageComponent(stage)}</div>
+      </div>
+    </DealFormDataProvider>
+
+  );
 };
+

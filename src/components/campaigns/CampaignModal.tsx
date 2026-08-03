@@ -247,8 +247,8 @@ export function CampaignModal({ open, onClose, campaign, onCreated }: CampaignMo
             {errors.campaign_name && <p className="text-xs text-destructive">{errors.campaign_name}</p>}
           </div>
 
-          {/* Type + Priority */}
-          <div className="grid grid-cols-2 gap-2.5">
+          {/* Type (+ Priority on edit only) */}
+          <div className={isEditing ? "grid grid-cols-2 gap-2.5" : "space-y-1"}>
             <div className="space-y-1">
               <Label className="text-xs font-medium">Type *</Label>
               <Select value={formData.campaign_type} onValueChange={(v) => setFormData({ ...formData, campaign_type: v })}>
@@ -262,29 +262,31 @@ export function CampaignModal({ open, onClose, campaign, onCreated }: CampaignMo
               {errors.campaign_type && <p className="text-xs text-destructive">{errors.campaign_type}</p>}
             </div>
 
-            <div className="space-y-1">
-              <Label className="text-xs font-medium">Priority</Label>
-              <Select value={formData.priority} onValueChange={(v) => setFormData({ ...formData, priority: v })}>
-                <SelectTrigger className="h-9">
-                  <SelectValue>
-                    <div className="flex items-center gap-2">
-                      <span className={`h-2 w-2 rounded-full ${priorityDot}`} />
-                      <span>{formData.priority}</span>
-                    </div>
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {PRIORITY_OPTIONS.map((p) => (
-                    <SelectItem key={p.value} value={p.value}>
+            {isEditing && (
+              <div className="space-y-1">
+                <Label className="text-xs font-medium">Priority</Label>
+                <Select value={formData.priority} onValueChange={(v) => setFormData({ ...formData, priority: v })}>
+                  <SelectTrigger className="h-9">
+                    <SelectValue>
                       <div className="flex items-center gap-2">
-                        <span className={`h-2 w-2 rounded-full ${p.dot}`} />
-                        <span>{p.label}</span>
+                        <span className={`h-2 w-2 rounded-full ${priorityDot}`} />
+                        <span>{formData.priority}</span>
                       </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PRIORITY_OPTIONS.map((p) => (
+                      <SelectItem key={p.value} value={p.value}>
+                        <div className="flex items-center gap-2">
+                          <span className={`h-2 w-2 rounded-full ${p.dot}`} />
+                          <span>{p.label}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
 
           {/* Owner + Channel */}

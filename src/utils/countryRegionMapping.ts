@@ -163,6 +163,21 @@ export const countryToRegion: Record<string, string> = {
 };
 
 /**
+ * Map every country to one of the app's supported currencies.
+ * Supported set: EUR (Europe), INR (India), USD (everything else).
+ */
+export type SupportedCurrency = "EUR" | "USD" | "INR";
+
+export function getCurrencyForCountry(country?: string | null): SupportedCurrency | undefined {
+  if (!country) return undefined;
+  if (country === "India") return "INR";
+  const region = countryToRegion[country];
+  if (!region) return undefined;
+  if (region === "Europe") return "EUR";
+  return "USD";
+}
+
+/**
  * Mapping of common country name variants to the canonical name used in the system.
  */
 const countryAliases: Record<string, string> = {

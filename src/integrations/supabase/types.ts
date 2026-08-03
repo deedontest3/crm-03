@@ -2159,14 +2159,16 @@ export type Database = {
         Row: {
           created_at: string
           deal_id: string
+          external_url: string | null
           file_name: string
-          file_path: string
+          file_path: string | null
           id: string
           is_compressed: boolean
           kind: string
           mime_type: string | null
           original_mime: string | null
           size_bytes: number | null
+          source_type: string
           updated_at: string
           uploaded_at: string
           uploaded_by: string | null
@@ -2174,14 +2176,16 @@ export type Database = {
         Insert: {
           created_at?: string
           deal_id: string
+          external_url?: string | null
           file_name: string
-          file_path: string
+          file_path?: string | null
           id?: string
           is_compressed?: boolean
           kind: string
           mime_type?: string | null
           original_mime?: string | null
           size_bytes?: number | null
+          source_type?: string
           updated_at?: string
           uploaded_at?: string
           uploaded_by?: string | null
@@ -2189,14 +2193,16 @@ export type Database = {
         Update: {
           created_at?: string
           deal_id?: string
+          external_url?: string | null
           file_name?: string
-          file_path?: string
+          file_path?: string | null
           id?: string
           is_compressed?: boolean
           kind?: string
           mime_type?: string | null
           original_mime?: string | null
           size_bytes?: number | null
+          source_type?: string
           updated_at?: string
           uploaded_at?: string
           uploaded_by?: string | null
@@ -3457,6 +3463,12 @@ export type Database = {
     Functions: {
       activate_scheduled_campaigns: { Args: never; Returns: number }
       archive_completed_action_items: { Args: never; Returns: number }
+      archive_deals: {
+        Args: { p_ids: string[]; p_reason?: string }
+        Returns: {
+          id: string
+        }[]
+      }
       auto_complete_campaign: {
         Args: { _campaign_id: string }
         Returns: boolean

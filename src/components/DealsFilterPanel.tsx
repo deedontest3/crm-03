@@ -9,7 +9,7 @@ import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { CalendarIcon, Filter, X } from "lucide-react";
 import { format } from "date-fns";
-import { DealStage, DEAL_STAGES } from "@/types/deal";
+import { DealStage, DEAL_STAGES, getStageLabel } from "@/types/deal";
 import { cn } from "@/lib/utils";
 
 export interface FilterState {
@@ -114,7 +114,7 @@ export const DealsFilterPanel = ({ filters, onFiltersChange, children }: DealsFi
                 <SelectItem value="all">All Stages</SelectItem>
                 {DEAL_STAGES.map(stage => (
                   <SelectItem key={stage} value={stage}>
-                    {stage}
+                    {getStageLabel(stage)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -178,9 +178,9 @@ export const DealsFilterPanel = ({ filters, onFiltersChange, children }: DealsFi
             </div>
           </div>
 
-          {/* Expected Closing Date Range */}
+          {/* Target Closure date Range */}
           <div className="space-y-2">
-            <Label>Expected Closing Date</Label>
+            <Label>Target Closure date</Label>
             <div className="space-y-2">
               <Popover>
                 <PopoverTrigger asChild>
@@ -193,7 +193,7 @@ export const DealsFilterPanel = ({ filters, onFiltersChange, children }: DealsFi
                   >
                     <CalendarIcon className="mr-2 h-4 w-4" />
                     {localFilters.expectedClosingDateStart ? (
-                      format(localFilters.expectedClosingDateStart, "PPP")
+                      format(localFilters.expectedClosingDateStart, "dd/MM/yyyy")
                     ) : (
                       <span>From date</span>
                     )}
@@ -221,7 +221,7 @@ export const DealsFilterPanel = ({ filters, onFiltersChange, children }: DealsFi
                   >
                     <CalendarIcon className="mr-2 h-4 w-4" />
                     {localFilters.expectedClosingDateEnd ? (
-                      format(localFilters.expectedClosingDateEnd, "PPP")
+                      format(localFilters.expectedClosingDateEnd, "dd/MM/yyyy")
                     ) : (
                       <span>To date</span>
                     )}

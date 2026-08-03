@@ -13,11 +13,12 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Ban, Download, Loader2, Plus, Search, Trash2 } from "lucide-react";
+import { Ban, Download, Plus, Search, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 import { format } from "date-fns";
+import { AppLoader } from "@/components/ui/loader";
 
 type Reason = "unsubscribed" | "bounced" | "complained" | "manual";
 
@@ -241,7 +242,7 @@ const SuppressionListSettings = () => {
                   Cancel
                 </Button>
                 <Button onClick={handleAdd} disabled={adding}>
-                  {adding && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                  {adding && <AppLoader variant="inline" className="mr-2" />}
                   Add to suppression list
                 </Button>
               </DialogFooter>
@@ -270,7 +271,7 @@ const SuppressionListSettings = () => {
               {loading ? (
                 <TableRow>
                   <TableCell colSpan={5} className="text-center py-8">
-                    <Loader2 className="h-4 w-4 animate-spin inline-block text-muted-foreground" />
+                    <AppLoader variant="inline" className="inline-block" />
                   </TableCell>
                 </TableRow>
               ) : pageRows.length === 0 ? (

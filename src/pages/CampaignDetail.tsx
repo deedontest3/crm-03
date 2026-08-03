@@ -1,7 +1,7 @@
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useCampaignDetail, useCampaigns, useCampaignIdFromSlug, type CampaignDetailEnabledTabs } from "@/hooks/useCampaigns";
 import { useUserDisplayNames } from "@/hooks/useUserDisplayNames";
-import { useState, useMemo, useEffect, lazy, Suspense } from "react";
+import { useState, useMemo, useEffect, useRef, lazy, Suspense } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -45,6 +45,15 @@ const CampaignActionItems = lazy(() =>
 const UnmatchedRepliesPanel = lazy(() =>
   import("@/components/campaigns/UnmatchedRepliesPanel").then((m) => ({ default: m.UnmatchedRepliesPanel }))
 );
+const CampaignActivityTab = lazy(() =>
+  import("@/components/campaigns/CampaignActivityTab").then((m) => ({ default: m.CampaignActivityTab }))
+);
+const AutomationTriggersPanel = lazy(() =>
+  import("@/components/campaigns/AutomationTriggersPanel").then((m) => ({ default: m.AutomationTriggersPanel }))
+);
+import { ApprovalsBanner } from "@/components/campaigns/ApprovalsBanner";
+import { PauseAllSendsButton } from "@/components/campaigns/PauseAllSendsButton";
+import { useCanManageCampaign } from "@/hooks/useCanManageCampaign";
 
 const TabFallback = () => (
   <div className="space-y-3 py-2">
@@ -57,15 +66,20 @@ import { STATUS_BADGE as statusColors } from "@/utils/campaignStatus";
 
 type CampaignDrilldown =
   | { tab: "setup"; section: "region" | "audience" | "message" | "timing"; audienceView?: "accounts" | "contacts" }
-  | { tab: "monitoring"; view: "outreach" | "analytics"; channel?: "email" | "linkedin" | "call"; status?: "all" | "sent" | "replied" | "failed" | "bounced"; threadId?: string }
+  | { tab: "monitoring"; view: "outreach" | "analytics"; channel?: "email" | "linkedin" | "call"; status?: "all" | "sent" | "delivered" | "opened" | "replied" | "failed" | "bounced" | "notReplied" | "needsFollowup"; threadId?: string }
   | { tab: "actionItems" };
 
 export default function CampaignDetail() {
   const { id: rawId } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   // Resolve slug → UUID via a lightweight scoped query (no full campaigns list).
   const { id } = useCampaignIdFromSlug(rawId);
+
+  // Server-mirrored gate. When false, hide status changes / Actions menu /
+  // pause-all so the UI can't offer buttons the server will 403 on.
+  const { canManage: canManageCampaign } = useCanManageCampaign(id);
 
   const [activeTab, setActiveTab] = useState("overview");
   const [monitoringView, setMonitoringView] = useState<"outreach" | "analytics">("outreach");
@@ -75,6 +89,36 @@ export default function CampaignDetail() {
     if (next.tab === "monitoring") setMonitoringView(next.view);
     setActiveTab(next.tab);
   };
+
+  const handleOpenEmailThread = (threadId: string) => {
+    setMonitoringView("outreach");
+    setDrilldown({ tab: "monitoring", view: "outreach", channel: "email", threadId });
+    setActiveTab("monitoring");
+    const next = new URLSearchParams(searchParams);
+    next.set("tab", "monitoring");
+    next.set("thread", threadId);
+    setSearchParams(next, { replace: false });
+  };
+
+  // Honor ?tab= deep-link (and map legacy `tasks` alias → `actionItems`).
+  useEffect(() => {
+    const raw = searchParams.get("tab");
+    if (!raw) return;
+    const mapped = raw === "tasks" ? "actionItems" : raw;
+    const allowed = ["overview", "setup", "monitoring", "actionItems", "activity"];
+    if (allowed.includes(mapped)) {
+      setActiveTab((prev) => (prev === mapped ? prev : mapped));
+    }
+    if (raw === "tasks") {
+      const next = new URLSearchParams(searchParams);
+      next.set("tab", "actionItems");
+      setSearchParams(next, { replace: true });
+    }
+    // Re-run whenever the URL ?tab= changes — this is what makes deep-links
+    // from sibling tabs (e.g. "Open email thread" in Action Items → Monitoring)
+    // actually switch tabs instead of just updating the URL.
+  }, [searchParams]);
+
   const enabledTabs = useMemo<CampaignDetailEnabledTabs>(() => ({
     overview: true, // always needed for the default landing tab
     setup: activeTab === "setup",
@@ -91,6 +135,10 @@ export default function CampaignDetail() {
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [activateOpen, setActivateOpen] = useState(false);
   const [completeOpen, setCompleteOpen] = useState(false);
+  const [revertOpen, setRevertOpen] = useState(false);
+  const pendingRevertRef = useRef<{ flag: string; label: string } | null>(null);
+  // Edge-detect ref for the auto Activate prompt: only fire when all-done flips false→true.
+  const prevAllDoneRef = useRef<boolean>(false);
   // C11: in-flight queue counter — surface "N emails still in flight" before completing.
   const { data: inFlightCount = 0 } = useQuery({
     queryKey: ["send-jobs-in-flight", id],
@@ -119,11 +167,26 @@ export default function CampaignDetail() {
       document.title = `${detail.campaign.campaign_name} — Campaign`;
       const canonical = (detail.campaign as any).slug as string | null | undefined;
       if (canonical && rawId !== canonical) {
-        navigate(`/campaigns/${canonical}`, { replace: true });
+        navigate(`/campaigns/${canonical}?${searchParams.toString()}`, { replace: true });
       }
     }
     return () => { document.title = "CRM"; };
-  }, [detail.campaign?.campaign_name, (detail.campaign as any)?.slug, navigate, rawId]);
+  }, [detail.campaign?.campaign_name, (detail.campaign as any)?.slug, navigate, rawId, searchParams]);
+
+  // Auto-prompt to Activate the moment all 4 Setup sections become done while in Draft.
+  // MUST be declared before any early returns to keep hook order stable.
+  const _isFullyStrategyComplete = detail.isFullyStrategyComplete;
+  const _statusForEffect = detail.campaign?.status || "Draft";
+  const _isCompletedForEffect = _statusForEffect === "Completed";
+  const _isCampaignEndedForEffect = !!detail.isCampaignEnded;
+  useEffect(() => {
+    const prev = prevAllDoneRef.current;
+    prevAllDoneRef.current = !!_isFullyStrategyComplete;
+    if (!detail.campaign) return;
+    if (!prev && _isFullyStrategyComplete && _statusForEffect === "Draft" && !_isCompletedForEffect && !_isCampaignEndedForEffect) {
+      setActivateOpen(true);
+    }
+  }, [_isFullyStrategyComplete, _statusForEffect, _isCompletedForEffect, _isCampaignEndedForEffect, detail.campaign]);
 
   if (detail.isLoading) {
     return (
@@ -222,6 +285,29 @@ export default function CampaignDetail() {
     performStatusChange(newStatus);
   };
 
+  // (Auto-activate effect moved above early returns to keep hook order stable.)
+
+  // Intercept Setup section unmark on non-Draft campaigns: confirm revert-to-Draft first.
+  const handleSectionUnmarkRequiresRevert = (flag: string, label: string): boolean => {
+    if (currentStatus === "Draft" || isCompleted) return false;
+    pendingRevertRef.current = { flag, label };
+    setRevertOpen(true);
+    return true;
+  };
+
+  const confirmRevertToDraft = async () => {
+    const pending = pendingRevertRef.current;
+    setRevertOpen(false);
+    if (!pending) return;
+    try {
+      await detail.updateStrategyFlag(pending.flag, false);
+      performStatusChange("Draft");
+      toast({ title: `Reverted to Draft — edit ${pending.label} and re-activate when ready.` });
+    } finally {
+      pendingRevertRef.current = null;
+    }
+  };
+
   const statusDot: Record<string, string> = {
     Draft: "bg-muted-foreground",
     Scheduled: "bg-cyan-500",
@@ -249,74 +335,84 @@ export default function CampaignDetail() {
             </div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild disabled={isCompleted}>
-                <Button size="sm" className={`h-7 px-2 gap-1 text-xs border ${statusColors[currentStatus]} hover:opacity-90`}>
-                  <span className={`inline-block h-2 w-2 rounded-full ${statusDot[currentStatus]}`} />
-                  {currentStatus}
-                  {!isCompleted && <ChevronDown className="h-3 w-3" />}
-                </Button>
-              </DropdownMenuTrigger>
-              {!isCompleted && (
-                <DropdownMenuContent align="end" className="w-56">
-                  {buildMenuOptions().map((opt) => {
-                    const item = (
-                      <DropdownMenuItem
-                        key={opt.value}
-                        disabled={opt.disabled}
-                        onSelect={(e) => {
-                          if (opt.disabled) { e.preventDefault(); return; }
-                          handleStatusChange(opt.value);
-                        }}
-                        className="flex items-center gap-2"
-                      >
-                        <span className={`inline-block h-2 w-2 rounded-full ${statusDot[opt.value]}`} />
-                        <span className="flex-1">{opt.label}</span>
-                      </DropdownMenuItem>
-                    );
-                    if (opt.disabled && opt.reason) {
-                      return (
-                        <Tooltip key={opt.value}>
-                          <TooltipTrigger asChild><div>{item}</div></TooltipTrigger>
-                          <TooltipContent side="left" className="max-w-[220px] text-xs">{opt.reason}</TooltipContent>
-                        </Tooltip>
+            {canManageCampaign ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild disabled={isCompleted}>
+                  <Button size="sm" className={`h-7 px-2 gap-1 text-xs border ${statusColors[currentStatus]} hover:opacity-90`}>
+                    <span className={`inline-block h-2 w-2 rounded-full ${statusDot[currentStatus]}`} />
+                    {currentStatus}
+                    {!isCompleted && <ChevronDown className="h-3 w-3" />}
+                  </Button>
+                </DropdownMenuTrigger>
+                {!isCompleted && (
+                  <DropdownMenuContent align="end" className="w-56">
+                    {buildMenuOptions().map((opt) => {
+                      const item = (
+                        <DropdownMenuItem
+                          key={opt.value}
+                          disabled={opt.disabled}
+                          onSelect={(e) => {
+                            if (opt.disabled) { e.preventDefault(); return; }
+                            handleStatusChange(opt.value);
+                          }}
+                          className="flex items-center gap-2"
+                        >
+                          <span className={`inline-block h-2 w-2 rounded-full ${statusDot[opt.value]}`} />
+                          <span className="flex-1">{opt.label}</span>
+                        </DropdownMenuItem>
                       );
-                    }
-                    return item;
-                  })}
-                  {buildMenuOptions().length === 0 && (
-                    <DropdownMenuItem disabled>No status changes available</DropdownMenuItem>
-                  )}
-                </DropdownMenuContent>
-              )}
-            </DropdownMenu>
+                      if (opt.disabled && opt.reason) {
+                        return (
+                          <Tooltip key={opt.value}>
+                            <TooltipTrigger asChild><div>{item}</div></TooltipTrigger>
+                            <TooltipContent side="left" className="max-w-[220px] text-xs">{opt.reason}</TooltipContent>
+                          </Tooltip>
+                        );
+                      }
+                      return item;
+                    })}
+                    {buildMenuOptions().length === 0 && (
+                      <DropdownMenuItem disabled>No status changes available</DropdownMenuItem>
+                    )}
+                  </DropdownMenuContent>
+                )}
+              </DropdownMenu>
+            ) : (
+              // Read-only status badge for viewers who can't manage the campaign.
+              <Badge variant="outline" className={`h-7 px-2 gap-1 text-xs ${statusColors[currentStatus]}`}>
+                <span className={`inline-block h-2 w-2 rounded-full ${statusDot[currentStatus]}`} />
+                {currentStatus}
+              </Badge>
+            )}
 
             {isCampaignEnded && !isCompleted && (
               <Badge variant="destructive" className="h-6 px-1.5 text-[11px] flex items-center gap-1">
                 <AlertTriangle className="h-3 w-3" /> Ended
               </Badge>
             )}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="h-7 px-2 gap-1 text-xs">
-                  <MoreHorizontal className="h-3.5 w-3.5" /> Actions
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-40">
-                <DropdownMenuItem onClick={() => setEditOpen(true)}>
-                  <Pencil className="h-3.5 w-3.5 mr-2" /> Edit
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => cloneCampaign.mutateAsync(campaign.id).then((res) => { if (res?.slug) navigate(`/campaigns/${res.slug}`); else if (res?.id) navigate(`/campaigns/${res.id}`); })}>
-                  <Copy className="h-3.5 w-3.5 mr-2" /> Clone
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setArchiveOpen(true)}>
-                  <Archive className="h-3.5 w-3.5 mr-2" /> Archive
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setDeleteOpen(true)} className="text-destructive focus:text-destructive">
-                  <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            {canManageCampaign && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-7 px-2 gap-1 text-xs">
+                    <MoreHorizontal className="h-3.5 w-3.5" /> Actions
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-40">
+                  <DropdownMenuItem onClick={() => setEditOpen(true)}>
+                    <Pencil className="h-3.5 w-3.5 mr-2" /> Edit
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => cloneCampaign.mutateAsync(campaign.id).then((res) => { if (res?.slug) navigate(`/campaigns/${res.slug}`); else if (res?.id) navigate(`/campaigns/${res.id}`); })}>
+                    <Copy className="h-3.5 w-3.5 mr-2" /> Clone
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setArchiveOpen(true)}>
+                    <Archive className="h-3.5 w-3.5 mr-2" /> Archive
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setDeleteOpen(true)} className="text-destructive focus:text-destructive">
+                    <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </div>
         </div>
         {isDraftEndedPast && (
@@ -349,7 +445,13 @@ export default function CampaignDetail() {
               <TabsTrigger value="setup" className="text-sm font-medium h-10 px-4 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:text-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Setup</TabsTrigger>
               <TabsTrigger value="monitoring" className="text-sm font-medium h-10 px-4 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:text-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Monitoring</TabsTrigger>
               <TabsTrigger value="actionItems" className="text-sm font-medium h-10 px-4 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:text-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Action Items</TabsTrigger>
+              <TabsTrigger value="activity" className="text-sm font-medium h-10 px-4 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:text-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Activity</TabsTrigger>
             </TabsList>
+          </div>
+
+          {/* Approval requests banner (shown across all tabs) */}
+          <div className="mt-2">
+            <ApprovalsBanner campaignId={campaign.id} />
           </div>
 
           <div className="flex-1 overflow-auto mt-2 min-h-0">
@@ -375,6 +477,7 @@ export default function CampaignDetail() {
                   campaign={campaign}
                   isStrategyComplete={isStrategyComplete}
                   updateStrategyFlag={detail.updateStrategyFlag}
+                  onSectionUnmarkRequiresRevert={handleSectionUnmarkRequiresRevert}
                   isCampaignEnded={isCampaignEnded}
                   daysRemaining={daysRemaining}
                   timingNotes={detail.strategy?.timing_notes}
@@ -429,53 +532,55 @@ export default function CampaignDetail() {
               </Suspense>
             </TabsContent>
 
-            <TabsContent value="monitoring" className="mt-0">
+            <TabsContent value="monitoring" className="mt-0 h-full data-[state=inactive]:hidden">
               {monitoringView === "outreach" ? (
                 <Suspense fallback={<TabFallback />}>
-                  <div className="space-y-3">
+                  <div className="flex flex-col gap-2 h-full min-h-0">
                     <Suspense fallback={null}>
                       <UnmatchedRepliesPanel campaignId={campaign.id} />
                     </Suspense>
-                    <CampaignCommunications
-                    campaignId={campaign.id}
-                    isCampaignEnded={isCampaignEnded}
-                    isReadOnly={isCompleted}
-                    viewMode={monitoringView}
-                    onViewModeChange={setMonitoringView}
-                    initialChannel={drilldown?.tab === "monitoring" ? drilldown.channel : undefined}
-                    initialStatusFilter={drilldown?.tab === "monitoring" ? drilldown.status : undefined}
-                    initialThreadId={drilldown?.tab === "monitoring" ? drilldown.threadId : undefined}
-                    />
+                    <div className="flex-1 min-h-0">
+                      <CampaignCommunications
+                      campaignId={campaign.id}
+                      isCampaignEnded={isCampaignEnded}
+                      isReadOnly={isCompleted}
+                      viewMode={monitoringView}
+                      onViewModeChange={setMonitoringView}
+                      initialChannel={drilldown?.tab === "monitoring" ? drilldown.channel : undefined}
+                      initialStatusFilter={drilldown?.tab === "monitoring" ? drilldown.status : undefined}
+                      initialThreadId={drilldown?.tab === "monitoring" ? drilldown.threadId : undefined}
+                      />
+                    </div>
                   </div>
                 </Suspense>
               ) : (
-                <div className="space-y-2">
-                  <div className="flex justify-end">
-                    <ToggleGroup
-                      type="single"
-                      size="sm"
-                      value={monitoringView}
-                      onValueChange={(v) => v && setMonitoringView(v as "outreach" | "analytics")}
-                      className="h-8 rounded-md border bg-muted/40 p-0.5"
-                    >
-                      <ToggleGroupItem value="outreach" className="h-7 px-3 text-xs data-[state=on]:bg-background data-[state=on]:shadow-sm">
-                        Outreach
-                      </ToggleGroupItem>
-                      <ToggleGroupItem value="analytics" className="h-7 px-3 text-xs data-[state=on]:bg-background data-[state=on]:shadow-sm">
-                        Analytics
-                      </ToggleGroupItem>
-                    </ToggleGroup>
-                  </div>
-                  <Suspense fallback={<TabFallback />}>
-                    <CampaignAnalytics campaignId={campaign.id} campaign={campaign} />
-                  </Suspense>
-                </div>
+                <Suspense fallback={<TabFallback />}>
+                  <CampaignAnalytics
+                    campaignId={campaign.id}
+                    campaign={campaign}
+                    onDrilldown={handleDrilldown}
+                    viewMode={monitoringView}
+                    onViewModeChange={setMonitoringView}
+                  />
+                </Suspense>
               )}
             </TabsContent>
 
             <TabsContent value="actionItems" className="mt-0">
               <Suspense fallback={<TabFallback />}>
-                <CampaignActionItems campaignId={campaign.id} />
+                <CampaignActionItems campaignId={campaign.id} onOpenThread={handleOpenEmailThread} />
+              </Suspense>
+            </TabsContent>
+
+            <TabsContent value="activity" className="mt-0 space-y-3">
+              <div className="flex justify-end">
+                {!isCompleted && <PauseAllSendsButton campaignId={campaign.id} />}
+              </div>
+              <Suspense fallback={<TabFallback />}>
+                <AutomationTriggersPanel campaignId={campaign.id} isReadOnly={isCompleted} />
+              </Suspense>
+              <Suspense fallback={<TabFallback />}>
+                <CampaignActivityTab campaignId={campaign.id} />
               </Suspense>
             </TabsContent>
           </div>
@@ -588,6 +693,23 @@ export default function CampaignDetail() {
             >
               {inFlightCount > 0 ? `Cancel ${inFlightCount} & Complete` : "Mark Completed"}
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={revertOpen} onOpenChange={(open) => { if (!open) pendingRevertRef.current = null; setRevertOpen(open); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Revert to Draft?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingRevertRef.current
+                ? `Editing ${pendingRevertRef.current.label} requires moving this campaign back to Draft. Outreach and monitoring will pause until you re-activate.`
+                : "Editing this section requires moving this campaign back to Draft. Outreach and monitoring will pause until you re-activate."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmRevertToDraft}>Revert to Draft</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

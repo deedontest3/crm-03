@@ -32,6 +32,12 @@ interface Props {
   audienceView?: "accounts" | "contacts";
   /** When true (campaign Completed), Message section hides create/edit actions. */
   isReadOnly?: boolean;
+  /**
+   * Optional intercept fired when the user unmarks an already-done section.
+   * Return `true` to skip the local update — the parent will handle it
+   * (e.g. show a "Revert to Draft?" confirmation before flipping the flag).
+   */
+  onSectionUnmarkRequiresRevert?: (flag: string, label: string) => boolean;
   contentCounts?: {
     emailTemplateCount: number;
     phoneScriptCount: number;
@@ -57,7 +63,7 @@ export function parseSelectedRegions(raw: string | null): string[] {
   return raw && !raw.startsWith("[") ? [raw] : [];
 }
 
-export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, updateStrategyFlag, isCampaignEnded, daysRemaining, timingNotes, initialOpenSection, audienceView, isReadOnly = false, contentCounts }: Props) {
+export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, updateStrategyFlag, isCampaignEnded, daysRemaining, timingNotes, initialOpenSection, audienceView, isReadOnly = false, contentCounts, onSectionUnmarkRequiresRevert }: Props) {
   const queryClient = useQueryClient();
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     region: true, audience: false, message: false, timing: false,
@@ -138,6 +144,8 @@ export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, upd
   };
 
   const handleUnmark = async (flag: string, label: string) => {
+    // Parent may intercept (e.g. show "Revert to Draft?" confirm on non-Draft campaigns).
+    if (onSectionUnmarkRequiresRevert?.(flag, label)) return;
     await updateStrategyFlag(flag, false);
     toast({ title: `${label} unmarked` });
   };

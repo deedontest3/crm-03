@@ -118,6 +118,7 @@ export function CampaignDashboard({ campaigns, getStrategyProgress, getStrategyD
   const [ownerFilter, setOwnerFilter] = useState<string>("all");
   const [channelFilter, setChannelFilter] = useState<string>("all");
   const [engagementFilter, setEngagementFilter] = useState<"Replied" | "Failed" | "Sent" | null>(null);
+  const [engagementCampaignId, setEngagementCampaignId] = useState<string>("all");
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounced(search, 300);
   const [statsPanel, setStatsPanel] = useState<null | "accounts" | "contacts" | "monitoring" | "avg">(null);
@@ -269,6 +270,75 @@ export function CampaignDashboard({ campaigns, getStrategyProgress, getStrategyD
     },
   });
 
+  // Enriched email metrics scoped to selected campaign (or all active).
+  // Pulls open/click/bounce/unsubscribe signals from campaign_communications.
+  const engagementScopeIds = useMemo(
+    () => engagementCampaignId === "all" ? activeCampaignIds : [engagementCampaignId],
+    [engagementCampaignId, activeCampaignIds]
+  );
+
+  const { data: emailMetrics, isLoading: emailMetricsLoading } = useQuery({
+    queryKey: ["campaign-email-metrics", engagementScopeIds.join(",")],
+    enabled: engagementScopeIds.length > 0,
+    staleTime: 60_000,
+    queryFn: async () => {
+      const PAGE = 1000;
+      let from = 0;
+      type Row = {
+        id: string; conversation_id: string | null; sent_via: string | null;
+        delivery_status: string | null; opened_at: string | null; open_count: number | null;
+        is_bot_open: boolean | null; bounced_at: string | null; unsubscribed_at: string | null;
+        reply_intent: string | null; communication_date: string | null;
+      };
+      const all: Row[] = [];
+      while (from < 100_000) {
+        const { data, error } = await supabase
+          .from("campaign_communications")
+          .select("id, conversation_id, sent_via, delivery_status, opened_at, open_count, is_bot_open, bounced_at, unsubscribed_at, reply_intent, communication_date")
+          .in("campaign_id", engagementScopeIds)
+          .eq("communication_type", "email")
+          .range(from, from + PAGE - 1);
+        if (error) throw error;
+        const rows = (data || []) as Row[];
+        all.push(...rows);
+        if (rows.length < PAGE) break;
+        from += PAGE;
+      }
+      // Group by thread (conversation_id), excluding inbound graph-sync rows.
+      const threads = new Map<string, Row[]>();
+      for (const r of all) {
+        if ((r.sent_via || "manual") === "graph-sync") continue;
+        const key = r.conversation_id || `solo-${r.id}`;
+        const arr = threads.get(key) || [];
+        arr.push(r);
+        threads.set(key, arr);
+      }
+      let sent = 0, replied = 0, failed = 0, opened = 0, bounced = 0, unsubscribed = 0, positive = 0, negative = 0;
+      let lastSentAt: string | null = null;
+      for (const arr of threads.values()) {
+        sent++;
+        const anyOpen = arr.some(r => (r.opened_at || (r.open_count || 0) > 0) && !r.is_bot_open);
+        if (anyOpen) opened++;
+        const anyBounce = arr.some(r => !!r.bounced_at || r.delivery_status === "bounced");
+        if (anyBounce) bounced++;
+        const anyFail = arr.some(r => r.delivery_status === "failed");
+        if (anyFail) failed++;
+        const anyUnsub = arr.some(r => !!r.unsubscribed_at);
+        if (anyUnsub) unsubscribed++;
+        const intents = arr.map(r => r.reply_intent).filter(Boolean) as string[];
+        const hasReply = intents.length > 0 || arr.some(r => (r.sent_via || "manual") === "graph-sync");
+        // Reply detection from threads list (graph-sync filtered above) — fallback: presence of reply_intent.
+        if (intents.length > 0) replied++;
+        if (intents.some(i => /positive|interested|meeting|booked/i.test(i))) positive++;
+        if (intents.some(i => /negative|not_interested|unsubscribe|bounce/i.test(i))) negative++;
+        for (const r of arr) {
+          if (r.communication_date && (!lastSentAt || r.communication_date > lastSentAt)) lastSentAt = r.communication_date;
+        }
+      }
+      return { sent, replied, failed, opened, bounced, unsubscribed, positive, negative, lastSentAt };
+    },
+  });
+
   const agg = aggregates || {
     accountsBycamp: {}, contactsBycamp: {}, commsBycamp: {},
     touchesBycamp: {} as Record<string, number>,
@@ -293,17 +363,47 @@ export function CampaignDashboard({ campaigns, getStrategyProgress, getStrategyD
     return counts;
   }, [campaigns]);
 
-  const engagementData = useMemo(() => {
-    return Object.entries(agg.emailStatus)
-      .filter(([, v]) => v > 0)
-      .map(([name, value]) => ({ name, value, fill: ENGAGEMENT_COLORS[name as keyof typeof ENGAGEMENT_COLORS] }));
-  }, [agg.emailStatus]);
+  // Per-scope email status. The RPC aggregate is the authoritative source for
+  // Sent/Replied/Failed (it powers all other dashboard tiles). The enriched
+  // per-row query only adds opens/bounces/unsubs — never overwrite the
+  // headline counts with it, otherwise transient RLS / paging differences
+  // can blank out the widget.
+  const scopedStatus = useMemo(() => {
+    if (engagementCampaignId === "all") return agg.emailStatus;
+    return {
+      Sent: agg.sentBycamp[engagementCampaignId] || 0,
+      Replied: agg.repliesBycamp[engagementCampaignId] || 0,
+      Failed: agg.failedBycamp[engagementCampaignId] || 0,
+    };
+  }, [engagementCampaignId, agg]);
 
-  // Denominator = total OUTBOUND threads (Sent already counts every outbound thread,
-  // and a Replied/Failed thread is also an outbound thread — don't add them on top
-  // or you double-count and the rate caps far below reality).
-  const totalEmails = agg.emailStatus.Sent;
-  const replyRate = totalEmails > 0 ? Math.round((agg.emailStatus.Replied / totalEmails) * 100) : 0;
+  const engagementData = useMemo(() => {
+    return Object.entries(scopedStatus)
+      .filter(([, v]) => v > 0)
+      .map(([name, value]) => ({ name, value: value as number, fill: ENGAGEMENT_COLORS[name as keyof typeof ENGAGEMENT_COLORS] }));
+  }, [scopedStatus]);
+
+  const totalEmails = scopedStatus.Sent;
+  const replyRate = totalEmails > 0 ? Math.round((scopedStatus.Replied / totalEmails) * 100) : 0;
+  const openRate = totalEmails > 0 && emailMetrics ? Math.round((emailMetrics.opened / totalEmails) * 100) : 0;
+  const bounceRate = totalEmails > 0 && emailMetrics ? Math.round((emailMetrics.bounced / totalEmails) * 100) : 0;
+  const deliveredCount = emailMetrics ? Math.max(0, totalEmails - emailMetrics.bounced - scopedStatus.Failed) : null;
+  const deliveryRate = totalEmails > 0 && deliveredCount !== null ? Math.round((deliveredCount / totalEmails) * 100) : 0;
+
+  // Top campaign within current scope (only meaningful when "all" selected)
+  const topEngagementCampaign = useMemo(() => {
+    if (engagementCampaignId !== "all") return null;
+    let best: { id: string; name: string; rate: number; sent: number } | null = null;
+    for (const c of campaigns) {
+      if (c.archived_at) continue;
+      const sent = agg.sentBycamp[c.id] || 0;
+      if (sent < 3) continue; // need a meaningful sample
+      const replies = agg.repliesBycamp[c.id] || 0;
+      const rate = Math.round((replies / sent) * 100);
+      if (!best || rate > best.rate) best = { id: c.id, name: c.campaign_name, rate, sent };
+    }
+    return best;
+  }, [engagementCampaignId, campaigns, agg]);
 
   const topCampaigns = useMemo(() => {
     return [...campaigns]
@@ -653,39 +753,81 @@ export function CampaignDashboard({ campaigns, getStrategyProgress, getStrategyD
 
           {/* Email Engagement */}
           <Card className="border shadow-none min-h-[260px] flex flex-col">
-            <CardHeader className="pb-1 pt-3 px-4 flex flex-row items-center justify-between">
+            <CardHeader className="pb-1 pt-3 px-4 flex flex-row items-center justify-between gap-2">
               <CardTitle className="text-sm font-medium flex items-center gap-2">
                 <Mail className="h-3.5 w-3.5 text-muted-foreground" />
                 Email Engagement
               </CardTitle>
-              {engagementFilter && (
-                <Badge variant="secondary" className="text-[10px] cursor-pointer" onClick={() => setEngagementFilter(null)}>
-                  {engagementFilter} <X className="h-2.5 w-2.5 ml-1" />
-                </Badge>
-              )}
+              <div className="flex items-center gap-1.5">
+                {engagementFilter && (
+                  <Badge variant="secondary" className="text-[10px] cursor-pointer" onClick={() => setEngagementFilter(null)}>
+                    {engagementFilter} <X className="h-2.5 w-2.5 ml-1" />
+                  </Badge>
+                )}
+                <Select value={engagementCampaignId} onValueChange={(v) => setEngagementCampaignId(v)}>
+                  <SelectTrigger className="h-7 text-[11px] w-[160px]">
+                    <SelectValue placeholder="All campaigns" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-[280px]">
+                    <SelectItem value="all" className="text-xs">All campaigns</SelectItem>
+                    {[...campaigns]
+                      .filter((c) => !c.archived_at)
+                      .sort((a, b) => a.campaign_name.localeCompare(b.campaign_name))
+                      .map((c) => (
+                        <SelectItem key={c.id} value={c.id} className="text-xs">
+                          {c.campaign_name}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+                {engagementCampaignId !== "all" && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => {
+                          const c = campaigns.find((x) => x.id === engagementCampaignId);
+                          if (c) navigate(`/campaigns/${c.slug || slugify(c.campaign_name)}`);
+                        }}
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Open campaign</TooltipContent>
+                  </Tooltip>
+                )}
+              </div>
             </CardHeader>
-            <CardContent className="p-3 pt-2 flex-1 flex flex-col items-center justify-center">
-              {aggLoading ? (
-                <Skeleton className="w-[120px] h-[120px] rounded-full" />
+            <CardContent className="p-3 pt-2 flex-1 flex flex-col">
+              {aggLoading && engagementData.length === 0 ? (
+                <div className="flex-1 flex items-center justify-center">
+                  <Skeleton className="w-[120px] h-[120px] rounded-full" />
+                </div>
               ) : engagementData.length === 0 ? (
-                <div className="text-center flex flex-col items-center gap-1">
+                <div className="flex-1 text-center flex flex-col items-center justify-center gap-1">
                   <Inbox className="h-8 w-8 text-muted-foreground/40" />
                   <p className="text-sm font-medium">No emails sent yet</p>
-                  <p className="text-xs text-muted-foreground">Engagement breakdown appears once you send.</p>
+                  <p className="text-xs text-muted-foreground">
+                    {engagementCampaignId === "all"
+                      ? "Engagement breakdown appears once you send."
+                      : "This campaign hasn't sent any emails yet."}
+                  </p>
                 </div>
               ) : (
-                <>
-                  <div className="relative w-[120px] h-[120px]">
+                <div className="flex flex-row items-center gap-4">
+                  {/* Donut */}
+                  <div className="relative w-[130px] h-[130px] shrink-0">
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
                         <Pie
-                          data={engagementData} cx="50%" cy="50%" innerRadius={36} outerRadius={56}
+                          data={engagementData} cx="50%" cy="50%" innerRadius={40} outerRadius={62}
                           paddingAngle={2} dataKey="value" stroke="none"
                           onClick={(seg: any) => {
                             const name = seg?.name as "Sent" | "Replied" | "Failed";
                             if (!name) return;
                             setEngagementFilter((prev) => prev === name ? null : name);
-                            // Smooth-scroll to the All Campaigns table so the filter effect is visible.
                             setTimeout(() => {
                               document.getElementById("all-campaigns-table")?.scrollIntoView({ behavior: "smooth", block: "start" });
                             }, 50);
@@ -714,22 +856,61 @@ export function CampaignDashboard({ campaigns, getStrategyProgress, getStrategyD
                       <span className="text-[9px] text-muted-foreground tabular-nums">{totalEmails} total</span>
                     </div>
                   </div>
-                  <div className="flex items-center justify-center gap-3 mt-3 flex-wrap">
-                    {engagementData.map((e) => (
-                      <button
-                        key={e.name}
-                        onClick={() => setEngagementFilter((prev) => prev === e.name ? null : (e.name as any))}
-                        className={`flex items-center gap-1.5 text-[11px] px-1.5 py-0.5 rounded transition-colors ${
-                          engagementFilter === e.name ? "bg-muted ring-1 ring-border" : "hover:bg-muted/60"
-                        }`}
-                      >
-                        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: e.fill }} />
-                        <span className="text-muted-foreground">{e.name}</span>
-                        <span className="tabular-nums font-medium">{e.value}</span>
-                      </button>
-                    ))}
+
+                  {/* Detailed metric grid */}
+                  <div className="flex-1 grid grid-cols-2 gap-x-3 gap-y-1.5 min-w-0">
+                    <MetricRow color={ENGAGEMENT_COLORS.Sent} label="Sent" value={scopedStatus.Sent} />
+                    <MetricRow
+                      color={ENGAGEMENT_COLORS.Replied}
+                      label="Replied"
+                      value={scopedStatus.Replied}
+                      sub={totalEmails > 0 ? `${replyRate}%` : undefined}
+                      active={engagementFilter === "Replied"}
+                      onClick={() => setEngagementFilter((p) => (p === "Replied" ? null : "Replied"))}
+                    />
+                    {emailMetrics && (
+                      <MetricRow color="hsl(199, 89%, 48%)" label="Opened" value={emailMetrics.opened} sub={totalEmails > 0 ? `${openRate}%` : undefined} />
+                    )}
+                    {emailMetrics && deliveredCount !== null && (
+                      <MetricRow color="hsl(160, 60%, 45%)" label="Delivered" value={deliveredCount} sub={totalEmails > 0 ? `${deliveryRate}%` : undefined} />
+                    )}
+                    <MetricRow
+                      color={ENGAGEMENT_COLORS.Failed}
+                      label="Failed"
+                      value={scopedStatus.Failed}
+                      active={engagementFilter === "Failed"}
+                      onClick={() => setEngagementFilter((p) => (p === "Failed" ? null : "Failed"))}
+                    />
+                    {emailMetrics && emailMetrics.bounced > 0 && (
+                      <MetricRow color="hsl(25, 85%, 55%)" label="Bounced" value={emailMetrics.bounced} sub={totalEmails > 0 ? `${bounceRate}%` : undefined} />
+                    )}
+                    {emailMetrics && emailMetrics.unsubscribed > 0 && (
+                      <MetricRow color="hsl(280, 65%, 55%)" label="Unsub" value={emailMetrics.unsubscribed} />
+                    )}
                   </div>
-                </>
+                </div>
+              )}
+
+              {/* Footer: top campaign / last sent */}
+              {engagementData.length > 0 && (
+                <div className="mt-3 pt-2 border-t border-border/60 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                  {engagementCampaignId === "all" && topEngagementCampaign ? (
+                    <button
+                      className="flex items-center gap-1 hover:text-foreground transition-colors min-w-0"
+                      onClick={() => setEngagementCampaignId(topEngagementCampaign.id)}
+                      title="Filter widget to top-performing campaign"
+                    >
+                      <TrendingUp className="h-3 w-3 text-emerald-500 shrink-0" />
+                      <span className="truncate">Top: {topEngagementCampaign.name}</span>
+                      <span className="tabular-nums shrink-0">· {topEngagementCampaign.rate}%</span>
+                    </button>
+                  ) : <span />}
+                  {emailMetrics?.lastSentAt && (
+                    <span className="tabular-nums shrink-0">
+                      Last sent {format(new Date(emailMetrics.lastSentAt), "d MMM, HH:mm")}
+                    </span>
+                  )}
+                </div>
               )}
             </CardContent>
           </Card>
@@ -737,45 +918,7 @@ export function CampaignDashboard({ campaigns, getStrategyProgress, getStrategyD
         </div>
         )}
 
-        {/* Quick stats chip row — clickable, redirects to real list pages */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors text-xs"
-            onClick={() => navigate("/accounts")}
-            title="Open Accounts list"
-          >
-            <Building2 className="h-3.5 w-3.5" />
-            <span className="font-semibold tabular-nums">{totalAccountsDistinct}</span>
-            <span className="text-blue-600/80 dark:text-blue-400/80">accounts</span>
-          </button>
-          <button
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-colors text-xs"
-            onClick={() => navigate("/contacts")}
-            title="Open Contacts list"
-          >
-            <Users className="h-3.5 w-3.5" />
-            <span className="font-semibold tabular-nums">{totalContactsDistinct}</span>
-            <span className="text-emerald-600/80 dark:text-emerald-400/80">contacts</span>
-          </button>
-          <button
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-purple-50 dark:bg-purple-950/30 text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/40 transition-colors text-xs"
-            onClick={() => setStatsPanel("monitoring")}
-            title="Open monitoring panel"
-          >
-            <Activity className="h-3.5 w-3.5" />
-            <span className="font-semibold tabular-nums">{totalCommsDistinct}</span>
-            <span className="text-purple-600/80 dark:text-purple-400/80">touches</span>
-          </button>
-          <button
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors text-xs"
-            onClick={() => setStatsPanel("avg")}
-            title="Average touches per active campaign"
-          >
-            <TrendingUp className="h-3.5 w-3.5" />
-            <span className="font-semibold tabular-nums">{avgComms}</span>
-            <span className="text-amber-600/80 dark:text-amber-400/80">avg / campaign</span>
-          </button>
-        </div>
+
 
         {/* Section 2 — All Campaigns Table */}
         <div id="all-campaigns-table" className="mt-6 scroll-mt-4">
@@ -1604,5 +1747,35 @@ function EmptyState({ icon: Icon, message }: { icon: any; message: string }) {
       </div>
       <p className="text-sm text-muted-foreground">{message}</p>
     </div>
+  );
+}
+
+function MetricRow({
+  color, label, value, sub, active, onClick,
+}: {
+  color: string;
+  label: string;
+  value: number;
+  sub?: string;
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  const Comp: any = onClick ? "button" : "div";
+  return (
+    <Comp
+      onClick={onClick}
+      className={`flex items-center justify-between gap-2 text-[11px] px-1.5 py-1 rounded transition-colors ${
+        onClick ? "cursor-pointer hover:bg-muted/60" : ""
+      } ${active ? "bg-muted ring-1 ring-border" : ""}`}
+    >
+      <span className="flex items-center gap-1.5 min-w-0">
+        <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
+        <span className="text-muted-foreground truncate">{label}</span>
+      </span>
+      <span className="tabular-nums font-medium shrink-0">
+        {value.toLocaleString()}
+        {sub && <span className="text-muted-foreground ml-1 font-normal">({sub})</span>}
+      </span>
+    </Comp>
   );
 }

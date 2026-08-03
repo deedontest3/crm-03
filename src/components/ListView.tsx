@@ -5,22 +5,27 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Deal, DealStage, DEAL_STAGES, STAGE_COLORS } from "@/types/deal";
+import { Deal, DealStage, STAGE_PROBABILITY, TERMINAL_STAGES, isForwardPipelineMove, isBackwardPipelineMove, isAdjacentPipelineMove, isTransitionAllowed, getNextPipelineStage, buildBackwardMoveUpdates, type BackwardStageMoveRequest, getStageLabel } from "@/types/deal";
+import { useUserRole } from "@/hooks/useUserRole";
 import { Search, X, Pencil, Trash2, ArrowUp, ArrowDown, ArrowUpDown, ChevronLeft, ChevronRight, MoreHorizontal, ListTodo } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { format } from "date-fns";
 import { InlineEditCell } from "./InlineEditCell";
-import { DealColumnCustomizer, DealColumnConfig } from "./DealColumnCustomizer";
+import { DealColumnCustomizer } from "./DealColumnCustomizer";
 import { BulkActionsBar } from "./BulkActionsBar";
 import { DealsAdvancedFilter, AdvancedFilterState } from "./DealsAdvancedFilter";
 import { DealActionItemsModal } from "./DealActionItemsModal";
 import { DealActionsDropdown } from "./DealActionsDropdown";
 import { useToast } from "@/hooks/use-toast";
+import { showToastOnce } from "@/lib/toastOnce";
 import { useDealsColumnPreferences } from "@/hooks/useDealsColumnPreferences";
+import { BackwardStageConfirmDialog } from "./deal-form/BackwardStageConfirmDialog";
+import { MissingFieldsDialog } from "./kanban/MissingFieldsDialog";
+import { getFieldErrors } from "./deal-form/validation";
 interface ListViewProps {
   deals: Deal[];
   onDealClick: (deal: Deal) => void;
-  onUpdateDeal: (dealId: string, updates: Partial<Deal>) => void;
+  onUpdateDeal: (dealId: string, updates: Partial<Deal>) => Promise<void> | void;
   onDeleteDeals: (dealIds: string[]) => void;
   onImportDeals: (deals: Partial<Deal>[]) => void;
   headerActions?: React.ReactNode;
@@ -35,15 +40,12 @@ export const ListView = ({
   headerActions 
 }: ListViewProps) => {
   const [searchTerm, setSearchTerm] = useState("");
-  const [filters, setFilters] = useState<AdvancedFilterState>({
-    stages: [],
-    regions: [],
-    leadOwners: [],
-    priorities: [],
-    handoffStatuses: [],
-    searchTerm: "",
-    probabilityRange: [0, 100],
-  });
+    const [filters, setFilters] = useState<AdvancedFilterState>({
+      regions: [],
+      leadOwners: [],
+      priorities: [],
+      bus: [],
+    });
   const [sortBy, setSortBy] = useState<string>("modified_at");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [selectedDeals, setSelectedDeals] = useState<Set<string>>(new Set());
@@ -60,6 +62,16 @@ export const ListView = ({
   // Delete confirmation state
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [dealToDelete, setDealToDelete] = useState<string | null>(null);
+
+  const [pendingBackwardMove, setPendingBackwardMove] = useState<BackwardStageMoveRequest<Deal> | null>(null);
+
+  const [pendingTransition, setPendingTransition] = useState<{
+    dealId: string;
+    targetStage: DealStage;
+    missing: string[];
+    mode: 'move-to-target' | 'fill-current';
+    validationStage: DealStage;
+  } | null>(null);
 
   // Single active editor state
   const [editingCellKey, setEditingCellKey] = useState<string | null>(null);
@@ -80,6 +92,7 @@ export const ListView = ({
   }, [columnWidths]);
 
   const { toast } = useToast();
+  const { isAdminOrAbove } = useUserRole();
 
   const formatCurrency = (amount: number | undefined, currency: string = 'EUR') => {
     if (!amount) return '-';
@@ -90,7 +103,7 @@ export const ListView = ({
   const formatDate = (date: string | undefined) => {
     if (!date) return '-';
     try {
-      return format(new Date(date), 'MMM dd, yyyy');
+      return format(new Date(date), 'dd/MM/yyyy');
     } catch {
       return '-';
     }
@@ -171,8 +184,72 @@ export const ListView = ({
     // Export logic handled by DealActionsDropdown
   };
 
+  const getStageUpdates = (deal: Deal, targetStage: DealStage): Partial<Deal> => ({
+    stage: targetStage,
+    probability: targetStage === 'Hold'
+      ? (deal.probability ?? STAGE_PROBABILITY[targetStage])
+      : STAGE_PROBABILITY[targetStage],
+  });
+
   const handleInlineEdit = async (dealId: string, field: string, value: any) => {
     try {
+      if (field === 'stage') {
+        const deal = deals.find((d) => d.id === dealId);
+        const targetStage = value as DealStage;
+        if (!deal || deal.stage === targetStage) return;
+
+        const currentStage = deal.stage as DealStage;
+        const gate = isTransitionAllowed(currentStage, targetStage, { isAdmin: isAdminOrAbove });
+        if (!gate.allowed) {
+          toast({ title: "Move blocked", description: gate.reason, variant: "destructive" });
+          return;
+        }
+        if (!isAdjacentPipelineMove(currentStage, targetStage)) {
+          const next = getNextPipelineStage(currentStage, targetStage);
+          toast({
+            title: "One stage at a time",
+            description: next
+              ? `Move to ${getStageLabel(next)} first before reaching ${getStageLabel(targetStage)}.`
+              : `You can only move one pipeline stage at a time.`,
+            variant: "destructive",
+          });
+          return;
+        }
+        if (isBackwardPipelineMove(currentStage, targetStage)) {
+          setPendingBackwardMove({ dealId, deal, currentStage, targetStage });
+          return;
+        }
+
+        const forward = isForwardPipelineMove(currentStage, targetStage);
+        const validationStage: DealStage = TERMINAL_STAGES.includes(targetStage)
+          ? targetStage
+          : forward
+            ? currentStage
+            : targetStage;
+        const dataForCheck = forward && !TERMINAL_STAGES.includes(targetStage)
+          ? deal
+          : { ...deal, stage: targetStage };
+        const fieldErrors = getFieldErrors(dataForCheck, validationStage);
+        const missing = Object.keys(fieldErrors);
+        if (missing.length > 0) {
+          setPendingTransition({
+            dealId,
+            targetStage,
+            missing,
+            mode: forward && !TERMINAL_STAGES.includes(targetStage) ? 'fill-current' : 'move-to-target',
+            validationStage,
+          });
+          return;
+        }
+
+        await onUpdateDeal(dealId, getStageUpdates(deal, targetStage));
+        showToastOnce({
+          title: "Deal updated",
+          description: `Deal moved to ${getStageLabel(targetStage)} stage`,
+        });
+        return;
+      }
+
       await onUpdateDeal(dealId, { [field]: value });
       toast({
         title: "Deal updated",
@@ -199,7 +276,7 @@ export const ListView = ({
     if (field === 'handoff_status') return 'select';
     if (field === 'is_recurring') return 'select';
     if (field === 'currency_type') return 'select';
-    if (['internal_comment', 'customer_need', 'action_items', 'won_reason', 'lost_reason', 'need_improvement', 'drop_reason'].includes(field)) return 'textarea';
+    if (['internal_comment', 'customer_need', 'action_items', 'won_reason', 'lost_reason', 'drop_reason', 'opportunity_summary', 'opportunity_description', 'customer_objection', 'hold_reason'].includes(field)) return 'textarea';
     return 'text';
   };
 
@@ -257,27 +334,20 @@ export const ListView = ({
   const filteredAndSortedDeals = deals
     .filter(deal => {
       // Combine search from both searchTerm and filters.searchTerm
-      const allSearchTerms = [searchTerm, filters.searchTerm].filter(Boolean).join(' ').toLowerCase();
-      const matchesSearch = !allSearchTerms || 
+      const allSearchTerms = (searchTerm || '').toLowerCase();
+      const matchesSearch = !allSearchTerms ||
         deal.deal_name?.toLowerCase().includes(allSearchTerms) ||
         deal.project_name?.toLowerCase().includes(allSearchTerms) ||
         deal.lead_name?.toLowerCase().includes(allSearchTerms) ||
         deal.customer_name?.toLowerCase().includes(allSearchTerms) ||
         deal.region?.toLowerCase().includes(allSearchTerms);
-      
+
       // Apply multi-select filters
-      const matchesStages = filters.stages.length === 0 || filters.stages.includes(deal.stage);
       const matchesRegions = filters.regions.length === 0 || filters.regions.includes(deal.region || '');
       const matchesLeadOwners = filters.leadOwners.length === 0 || filters.leadOwners.includes(deal.lead_owner || '');
       const matchesPriorities = filters.priorities.length === 0 || filters.priorities.includes(String(deal.priority || ''));
-      const matchesHandoffStatuses = filters.handoffStatuses.length === 0 || filters.handoffStatuses.includes(deal.handoff_status || '');
-      
-      // Probability range filter
-      const dealProbability = deal.probability || 0;
-      const matchesProbabilityRange = dealProbability >= filters.probabilityRange[0] && dealProbability <= filters.probabilityRange[1];
-      
-      return matchesSearch && matchesStages && matchesRegions && matchesLeadOwners && 
-             matchesPriorities && matchesHandoffStatuses && matchesProbabilityRange;
+
+      return matchesSearch && matchesRegions && matchesLeadOwners && matchesPriorities;
     })
     .sort((a, b) => {
       let aValue: any;
@@ -320,25 +390,19 @@ export const ListView = ({
 
   const getActiveFiltersCount = () => {
     let count = 0;
-    if (filters.stages.length > 0) count++;
     if (filters.regions.length > 0) count++;
     if (filters.leadOwners.length > 0) count++;
     if (filters.priorities.length > 0) count++;
-    if (filters.handoffStatuses.length > 0) count++;
-    if (filters.searchTerm) count++;
-    if (filters.probabilityRange[0] > 0 || filters.probabilityRange[1] < 100) count++;
+    if (filters.bus.length > 0) count++;
     return count;
   };
 
   const clearAllFilters = () => {
     setFilters({
-      stages: [],
       regions: [],
       leadOwners: [],
       priorities: [],
-      handoffStatuses: [],
-      searchTerm: "",
-      probabilityRange: [0, 100],
+      bus: [],
     });
     setSearchTerm("");
   };
@@ -362,9 +426,9 @@ export const ListView = ({
 
   return (
     <div className="h-full flex flex-col bg-background">
-      {/* Filter Bar - consistent with other modules */}
-      <div className="flex-shrink-0 border-b border-border bg-background px-6 py-3">
-        <div className="flex flex-wrap items-center gap-3">
+      {/* Filter Bar - fixed height to align with sidebar logo divider */}
+      <div className="flex-shrink-0 h-16 border-b border-border bg-background px-6 flex items-center">
+        <div className="flex flex-1 items-center gap-3 overflow-hidden">
           {/* Search - responsive width like Action Items */}
           <div className="relative flex-1 min-w-[200px] max-w-[300px]">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
@@ -396,6 +460,14 @@ export const ListView = ({
               Clear All
             </Button>
           )}
+
+          <BulkActionsBar
+            selectedCount={selectedDeals.size}
+            onDelete={handleBulkDelete}
+            onExport={handleBulkExport}
+            onClearSelection={() => setSelectedDeals(new Set())}
+            className="static translate-x-0 z-auto animate-none"
+          />
 
           {/* Spacer */}
           <div className="flex-1" />
@@ -445,9 +517,7 @@ export const ListView = ({
                 >
                   <div className="flex items-center gap-2 pr-4 text-foreground whitespace-nowrap">
                     {column.label}
-                    {sortBy !== column.field ? (
-                      <ArrowUpDown className="w-3 h-3 text-muted-foreground/40" />
-                    ) : (
+                    {sortBy === column.field && (
                       sortOrder === "asc" ? <ArrowUp className="w-3 h-3 text-foreground" /> : <ArrowDown className="w-3 h-3 text-foreground" />
                     )}
                   </div>
@@ -546,17 +616,6 @@ export const ListView = ({
         </Table>
       </div>
 
-      {/* Bulk Actions Bar */}
-      {selectedDeals.size > 0 && (
-        <div className="flex-shrink-0 border-t bg-primary/5">
-          <BulkActionsBar
-            selectedCount={selectedDeals.size}
-            onDelete={handleBulkDelete}
-            onExport={handleBulkExport}
-            onClearSelection={() => setSelectedDeals(new Set())}
-          />
-        </div>
-      )}
 
       {/* Standard Pagination Footer - matching Action Items */}
       {filteredAndSortedDeals.length > 0 && (
@@ -644,6 +703,73 @@ export const ListView = ({
         open={actionModalOpen}
         onOpenChange={setActionModalOpen}
         deal={selectedDealForActions}
+      />
+
+      <MissingFieldsDialog
+        open={!!pendingTransition}
+        deal={pendingTransition ? deals.find(d => d.id === pendingTransition.dealId) ?? null : null}
+        targetStage={pendingTransition?.targetStage ?? null}
+        validationStage={pendingTransition?.validationStage ?? null}
+        mode={pendingTransition?.mode ?? 'move-to-target'}
+        missingFields={pendingTransition?.missing ?? []}
+        onCancel={() => setPendingTransition(null)}
+        onConfirm={async (updates) => {
+          if (!pendingTransition) return;
+          const { dealId, targetStage, mode } = pendingTransition;
+          const deal = deals.find(d => d.id === dealId);
+          if (!deal) return;
+          try {
+            if (mode === 'fill-current') {
+              await onUpdateDeal(dealId, updates);
+              toast({
+                title: "Saved",
+                description: `Required fields completed. You can now move the deal to ${getStageLabel(targetStage)}.`,
+              });
+            } else {
+              await onUpdateDeal(dealId, {
+                ...updates,
+                ...getStageUpdates(deal, targetStage),
+              });
+              showToastOnce({
+                title: "Deal updated",
+                description: `Deal moved to ${getStageLabel(targetStage)} stage`,
+              });
+            }
+            setPendingTransition(null);
+          } catch (error) {
+            toast({
+              title: "Update failed",
+              description: "Failed to update deal stage",
+              variant: "destructive",
+            });
+          }
+        }}
+      />
+
+      <BackwardStageConfirmDialog
+        open={!!pendingBackwardMove}
+        currentStage={pendingBackwardMove?.currentStage ?? null}
+        targetStage={pendingBackwardMove?.targetStage ?? null}
+        deal={pendingBackwardMove?.deal ?? null}
+        onCancel={() => setPendingBackwardMove(null)}
+        onConfirm={async (choice) => {
+          if (!pendingBackwardMove) return;
+          const { dealId, currentStage, targetStage, deal } = pendingBackwardMove;
+          setPendingBackwardMove(null);
+          try {
+            await onUpdateDeal(dealId, buildBackwardMoveUpdates(currentStage, targetStage, choice, deal));
+            toast({
+              title: "Deal updated",
+              description: `Deal moved back to ${getStageLabel(targetStage)} stage`,
+            });
+          } catch (error) {
+            toast({
+              title: "Update failed",
+              description: "Failed to update deal stage",
+              variant: "destructive",
+            });
+          }
+        }}
       />
 
       <DealColumnCustomizer

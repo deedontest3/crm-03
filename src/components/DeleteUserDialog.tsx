@@ -104,13 +104,18 @@ const DeleteUserDialog = ({ open, onClose, user, onSuccess }: DeleteUserDialogPr
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Delete User Account</AlertDialogTitle>
-          <AlertDialogDescription>
-            Are you sure you want to permanently delete the user "{user.user_metadata?.full_name || user.email}"? 
-            <br /><br />
-            <strong>This action cannot be undone and will:</strong>
-            <br />• Remove the user from the authentication system
-            <br />• Delete all associated profile data
-            <br />• Revoke all access permissions immediately
+          <AlertDialogDescription asChild>
+            <div>
+              Are you sure you want to delete the user "{user.user_metadata?.full_name || user.email}"?
+              <br /><br />
+              <strong>This will:</strong>
+              <br />• Revoke the user's sign-in access immediately
+              <br />• Delete personal data (notifications, preferences, saved filters, sessions, role)
+              <br /><br />
+              <strong>What is kept for history:</strong>
+              <br />• Deals, leads, contacts, campaigns, action items and emails created or modified by this user remain in the system
+              <br />• The user's name will still appear in "Created by", "Assigned to" and similar columns, marked as <em>(deleted)</em>, so you can always trace record history
+            </div>
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

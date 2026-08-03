@@ -111,12 +111,12 @@ export const DealActionItemsModal = ({ open, onOpenChange, deal }: DealActionIte
       if (functionError) {
         console.error('Error fetching users from edge function:', functionError);
         const { data: profilesData, error: profilesError } = await supabase
-          .from('profiles')
+          .from('profiles_public' as any)
           .select('id, full_name, "Email ID"')
           .order('full_name');
         
         if (!profilesError && profilesData) {
-          const mappedUsers = profilesData.map(profile => ({
+          const mappedUsers = (profilesData as any[]).map((profile: any) => ({
             id: profile.id,
             email: profile["Email ID"] || '',
             user_metadata: {
@@ -134,12 +134,12 @@ export const DealActionItemsModal = ({ open, onOpenChange, deal }: DealActionIte
     } catch (error) {
       console.error('Error fetching all users:', error);
       const { data: profilesData, error: profilesError } = await supabase
-        .from('profiles')
+        .from('profiles_public' as any)
         .select('id, full_name, "Email ID"')
         .order('full_name');
       
       if (!profilesError && profilesData) {
-        const mappedUsers = profilesData.map(profile => ({
+        const mappedUsers = (profilesData as any[]).map((profile: any) => ({
           id: profile.id,
           email: profile["Email ID"] || '',
           user_metadata: {

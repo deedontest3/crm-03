@@ -2,6 +2,16 @@ import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 // NOTE: We intentionally avoid the Radix Avatar primitive here because the preview
 // occasionally fails to load its chunk (504/ERR_ABORTED), which breaks Kanban rendering.
 // A lightweight initials avatar is sufficient for this UI.
@@ -9,6 +19,7 @@ import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/comp
 import { Pencil, Trash2, Briefcase, UserCircle, Building2, Clock, AlertCircle } from 'lucide-react';
 import { format, differenceInDays, startOfDay } from 'date-fns';
 import { cn } from '@/lib/utils';
+import { useState } from 'react';
 import { useAllUsers } from '@/hooks/useUserDisplayNames';
 import { useModuleRecordNames } from '@/hooks/useModuleRecords';
 import { ActionItem, ActionItemStatus, ActionItemPriority } from '@/hooks/useActionItems';
@@ -127,6 +138,7 @@ export function ActionItemsKanban({
   onStatusChange
 }: ActionItemsKanbanProps) {
   const { getUserDisplayName } = useAllUsers();
+  const [pendingDelete, setPendingDelete] = useState<ActionItem | null>(null);
 
   // Get all linked record names
   const itemsWithModules = actionItems.map(item => ({
@@ -155,6 +167,7 @@ export function ActionItemsKanban({
   };
 
   return (
+    <>
     <TooltipProvider>
       <DragDropContext onDragEnd={handleDragEnd}>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 h-full overflow-x-auto">
@@ -200,7 +213,7 @@ export function ActionItemsKanban({
                               {(provided, snapshot) => (
                                 <Card 
                                   ref={provided.innerRef} 
-                                  {...provided.draggableProps} 
+                                  {...(provided.draggableProps as any)} 
                                   {...provided.dragHandleProps} 
                                   className={cn(
                                     'cursor-pointer hover:shadow-md transition-all group border-l-4',
@@ -235,9 +248,10 @@ export function ActionItemsKanban({
                                           variant="ghost" 
                                           size="icon" 
                                           className="h-7 w-7 text-destructive hover:text-destructive" 
+                                          aria-label="Delete action item"
                                           onClick={e => {
                                             e.stopPropagation();
-                                            onDelete(item.id);
+                                            setPendingDelete(item);
                                           }}
                                         >
                                           <Trash2 className="h-3.5 w-3.5" />
@@ -310,5 +324,28 @@ export function ActionItemsKanban({
         </div>
       </DragDropContext>
     </TooltipProvider>
+    <AlertDialog open={!!pendingDelete} onOpenChange={(open) => !open && setPendingDelete(null)}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete action item?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {pendingDelete ? `“${pendingDelete.title}” will be permanently deleted. This cannot be undone.` : ''}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            onClick={() => {
+              if (pendingDelete) onDelete(pendingDelete.id);
+              setPendingDelete(null);
+            }}
+          >
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }

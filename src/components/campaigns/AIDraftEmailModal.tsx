@@ -8,7 +8,8 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
-import { Sparkles, Loader2 } from "lucide-react";
+import { Sparkles } from "lucide-react";
+import { AppLoader } from "@/components/ui/loader";
 
 interface Variant { subject: string; body: string; angle: string }
 
@@ -71,7 +72,7 @@ export function AIDraftEmailModal({ open, onOpenChange, campaignId, onPick }: Pr
           </div>
 
           <Button onClick={generate} disabled={loading} className="w-full">
-            {loading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Sparkles className="h-4 w-4 mr-2" />}
+            {loading ? <AppLoader variant="inline" className="mr-2" /> : <Sparkles className="h-4 w-4 mr-2" />}
             Generate 3 variants
           </Button>
 

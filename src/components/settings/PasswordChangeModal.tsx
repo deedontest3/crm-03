@@ -4,10 +4,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Key, Check, X, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { Key, Check, X, Eye, EyeOff } from "lucide-react";
 import { supabase } from '@/integrations/supabase/client';
 import { useSecurityAudit } from '@/hooks/useSecurityAudit';
 import { toast } from 'sonner';
+import { AppLoader } from "@/components/ui/loader";
 
 interface PasswordChangeModalProps {
   open: boolean;
@@ -178,7 +179,7 @@ const PasswordChangeModal = ({ open, onOpenChange, userId }: PasswordChangeModal
           <DialogFooter className="gap-2 sm:gap-0">
             <Button type="button" variant="outline" size="sm" onClick={handleClose}>Cancel</Button>
             <Button type="submit" size="sm" disabled={isChanging || !allRequirementsMet || !passwordsMatch}>
-              {isChanging ? <><Loader2 className="mr-2 h-3 w-3 animate-spin" />Updating...</> : "Update Password"}
+              {isChanging ? <><AppLoader variant="inline" className="mr-2" />Updating...</> : "Update Password"}
             </Button>
           </DialogFooter>
         </form>

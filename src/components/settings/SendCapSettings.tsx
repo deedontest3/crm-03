@@ -16,10 +16,11 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Gauge, Loader2, Plus, Save, Trash2 } from "lucide-react";
+import { Gauge, Plus, Save, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
+import { AppLoader } from "@/components/ui/loader";
 
 interface SendCap {
   id: string;
@@ -179,7 +180,7 @@ const SendCapSettings = () => {
       <CardContent className="space-y-6">
         {loading ? (
           <div className="flex items-center justify-center py-8">
-            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            <AppLoader variant="inline" />
           </div>
         ) : (
           <>
@@ -252,7 +253,7 @@ const SendCapSettings = () => {
                         Cancel
                       </Button>
                       <Button onClick={handleAddOverride} disabled={!newCampaignId || adding}>
-                        {adding && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                        {adding && <AppLoader variant="inline" className="mr-2" />}
                         Add override
                       </Button>
                     </DialogFooter>
@@ -365,7 +366,7 @@ const GlobalCapEditor = ({
           onClick={() => onSave(cap, { hourly_limit: hourly, daily_limit: daily, is_enabled: enabled })}
           className="gap-1.5"
         >
-          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+          {saving ? <AppLoader variant="inline" /> : <Save className="h-3.5 w-3.5" />}
           Save
         </Button>
       </div>
@@ -439,7 +440,7 @@ const CampaignCapRow = ({
               disabled={saving}
               onClick={() => onSave(cap, { hourly_limit: hourly, daily_limit: daily, is_enabled: enabled })}
             >
-              {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+              {saving ? <AppLoader variant="inline" /> : <Save className="h-3 w-3" />}
             </Button>
           )}
           <AlertDialog>

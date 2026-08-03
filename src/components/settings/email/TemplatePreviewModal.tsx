@@ -1,3 +1,4 @@
+import DOMPurify from 'dompurify';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -70,7 +71,7 @@ const TemplatePreviewModal = ({ open, onOpenChange, template }: TemplatePreviewM
             <ScrollArea className="h-[350px]">
               <div 
                 className="p-4 text-sm whitespace-pre-wrap"
-                dangerouslySetInnerHTML={{ __html: renderedBody }}
+                dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(renderedBody) }}
               />
             </ScrollArea>
           </div>

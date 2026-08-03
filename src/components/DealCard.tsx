@@ -26,8 +26,11 @@ const STAGE_BORDER_COLORS: Record<DealStage, string> = {
   Qualified: 'border-l-[hsl(188,50%,40%)]',
   RFQ: 'border-l-[hsl(204,30%,50%)]',
   Offered: 'border-l-[hsl(30,55%,45%)]',
+  Negotiation: 'border-l-[hsl(280,45%,50%)]',
+  'Verbal Approval': 'border-l-[hsl(160,50%,40%)]',
   Won: 'border-l-[hsl(142,50%,40%)]',
   Lost: 'border-l-[hsl(0,50%,50%)]',
+  Hold: 'border-l-[hsl(45,80%,45%)]',
   Dropped: 'border-l-[hsl(0,0%,50%)]',
 };
 
@@ -38,8 +41,11 @@ const STAGE_CARD_TINTS: Record<DealStage, string> = {
   Qualified: 'bg-[hsl(188,55%,97%)]',
   RFQ: 'bg-[hsl(204,35%,97%)]',
   Offered: 'bg-[hsl(30,55%,97%)]',
+  Negotiation: 'bg-[hsl(280,45%,97%)]',
+  'Verbal Approval': 'bg-[hsl(160,50%,97%)]',
   Won: 'bg-[hsl(142,50%,96%)]',
   Lost: 'bg-[hsl(0,50%,98%)]',
+  Hold: 'bg-[hsl(45,80%,97%)]',
   Dropped: 'bg-[hsl(0,0%,97%)]',
 };
 
@@ -102,7 +108,7 @@ export const DealCard = ({
         {/* Customer Name */}
         {deal.customer_name && (
           <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground/70 w-14 shrink-0">Account</span>
+            <span className="text-xs text-muted-foreground/70 w-14 shrink-0">Account :</span>
             <p className="text-sm font-medium text-foreground truncate">
               {deal.customer_name}
             </p>
@@ -112,7 +118,7 @@ export const DealCard = ({
         {/* Lead Name */}
         {deal.lead_name && (
           <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground/70 w-14 shrink-0">Lead</span>
+            <span className="text-xs text-muted-foreground/70 w-14 shrink-0">Contact :</span>
             <p className="text-xs text-muted-foreground truncate">
               {deal.lead_name}
             </p>
@@ -122,7 +128,7 @@ export const DealCard = ({
         {/* Lead Owner */}
         {deal.lead_owner && (
           <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground/70 w-14 shrink-0">Owner</span>
+            <span className="text-xs text-muted-foreground/70 w-14 shrink-0">Owner :</span>
             <p className="text-xs text-muted-foreground truncate">
               {deal.lead_owner}
             </p>
@@ -135,9 +141,12 @@ export const DealCard = ({
             <span className="text-xs text-muted-foreground/70">Probability</span>
             <div className="flex items-center gap-2">
               <div className="w-12 bg-muted/50 rounded-full h-1.5">
-                <div 
-                  className="bg-primary/70 rounded-full h-1.5 transition-all duration-300" 
-                  style={{ width: `${Math.max(deal.probability || 0, 2)}%` }}
+                <div
+                  className="rounded-full h-1.5 transition-all duration-300"
+                  style={{
+                    width: `${Math.max(deal.probability || 0, 2)}%`,
+                    backgroundColor: `hsl(142, ${70 + ((deal.probability || 0) / 100) * 20}%, ${90 - ((deal.probability || 0) / 100) * 45}%)`,
+                  }}
                 />
               </div>
               <span className="text-xs font-medium text-foreground">{deal.probability}%</span>
@@ -155,14 +164,14 @@ export const DealCard = ({
           </div>
         )}
         
-        {/* Expected Closing Date */}
+        {/* Target Closure date */}
         {deal.expected_closing_date && (
           <div className="flex items-center justify-between">
             <span className="text-xs text-muted-foreground/70">Close</span>
             <p className="text-xs text-muted-foreground">
               {(() => {
                 try {
-                  return format(new Date(deal.expected_closing_date), 'MMM dd, yyyy');
+                  return format(new Date(deal.expected_closing_date), 'dd/MM/yyyy');
                 } catch {
                   return 'Invalid date';
                 }
@@ -174,8 +183,8 @@ export const DealCard = ({
       </CardContent>
       
       {/* Footer with actions */}
-      <CardFooter className="px-3 py-2 border-t border-border/20 flex items-center justify-between">
-        <div className="flex items-center gap-2 text-xs text-muted-foreground/60">
+      <CardFooter className="px-3 py-1 border-t border-border/20 flex items-center justify-between min-h-0">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground/60 whitespace-nowrap">
           <span>{deal.modified_at ? (() => {
             try {
               return format(new Date(deal.modified_at), 'MMM dd');
@@ -186,10 +195,19 @@ export const DealCard = ({
           
           {deal.priority && (
             <Badge 
-              variant={deal.priority >= 4 ? 'destructive' : deal.priority >= 3 ? 'default' : 'secondary'}
+              variant={deal.priority <= 2 ? 'destructive' : deal.priority === 3 ? 'default' : 'secondary'}
               className="text-[10px] px-1.5 py-0 font-medium h-4"
             >
               P{deal.priority}
+            </Badge>
+          )}
+          
+          {deal.bu && deal.bu.length > 0 && (
+            <Badge 
+              variant="outline"
+              className="text-[10px] px-1.5 py-0 font-medium h-4 border-border/60 text-muted-foreground/80"
+            >
+              {deal.bu.join(', ')}
             </Badge>
           )}
         </div>
@@ -201,6 +219,7 @@ export const DealCard = ({
               variant="ghost"
               onClick={handleMoveToDropped}
               className="opacity-0 group-hover:opacity-100 transition-all duration-200 p-1 h-6 w-6 hover:bg-orange-100 text-orange-500 hover:text-orange-600"
+              aria-label="Move deal to Dropped"
               title="Move to Dropped"
             >
               <XCircle className="w-3.5 h-3.5" />
@@ -211,10 +230,11 @@ export const DealCard = ({
               size="sm"
               variant="ghost"
               onClick={handleExpand}
-              className="opacity-0 group-hover:opacity-100 transition-all duration-200 p-1 h-6 w-6 hover:bg-primary/10 text-muted-foreground hover:text-primary"
+              className="transition-all duration-200 px-1.5 h-6 gap-1 border border-border hover:bg-primary/10 hover:border-primary text-muted-foreground hover:text-primary"
+              aria-label="View deal details"
               title="View details"
             >
-              <Info className="w-3.5 h-3.5" />
+              <Info className="w-4 h-4" />
             </Button>
           )}
         </div>

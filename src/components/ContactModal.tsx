@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -13,17 +13,31 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Button } from "@/components/ui/button";
 import { AccountSearchableDropdown } from "./AccountSearchableDropdown";
 
+// Coerce a bare URL (e.g. "linkedin.com/in/foo") to a valid https:// URL so
+// users don't get "Invalid URL" errors for pasting without a scheme.
+const coerceUrl = (v: string | undefined) => {
+  if (!v) return v;
+  const s = v.trim();
+  if (!s) return s;
+  return /^https?:\/\//i.test(s) ? s : `https://${s}`;
+};
+const urlLike = z.preprocess(
+  (v) => (typeof v === 'string' ? coerceUrl(v) : v),
+  z.string().url("Invalid URL").optional().or(z.literal(""))
+);
+
 const contactSchema = z.object({
   contact_name: z.string().min(1, "Contact name is required"), // mandatory
   company_name: z.string().optional(),
+  account_id: z.string().uuid().optional().nullable(),
   position: z.string().optional(),
-  email: z.string().email("Invalid email address").optional().or(z.literal("")), // optional now
+  email: z.string().email("Invalid email address").optional().or(z.literal("")), // optional
   phone_no: z.string().optional(),
-  linkedin: z.string().url("Invalid LinkedIn URL").optional().or(z.literal("")),
-  website: z.string().url("Invalid website URL").optional().or(z.literal("")),
+  linkedin: urlLike,
+  website: urlLike,
   contact_source: z.string().optional(),
   industry: z.string().optional(),
-  region: z.string().optional(), // Changed from country to region
+  region: z.string().optional(),
   description: z.string().optional(),
 });
 
@@ -33,6 +47,7 @@ interface Contact {
   id: string;
   contact_name: string;
   company_name?: string;
+  account_id?: string | null;
   position?: string;
   email?: string;
   phone_no?: string;
@@ -48,42 +63,48 @@ interface ContactModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   contact?: Contact | null;
-  onSuccess: () => void;
+  prefillName?: string;
+  prefillCompany?: string;
+  onSuccess: (contact?: Contact) => void;
 }
 
 const contactSources = [
   "LinkedIn",
   "Website",
-  "Referral", 
+  "Referral",
   "Social Media",
   "Email Campaign",
-  "Other"
+  "Other",
 ];
 
 const industries = [
   "Automotive",
   "Technology",
   "Manufacturing",
-  "Other"
+  "Other",
 ];
 
 const regions = [
   "EU",
-  "US", 
+  "US",
   "ASIA",
-  "Other"
+  "Other",
 ];
 
-export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: ContactModalProps) => {
+export const ContactModal = ({ open, onOpenChange, contact, prefillName, prefillCompany, onSuccess }: ContactModalProps) => {
   const { toast } = useToast();
   const { logCreate, logUpdate } = useCRUDAudit();
   const [loading, setLoading] = useState(false);
+  // Tracks the currently selected account_id independently of the display name
+  // in the dropdown, so we always persist the primary key alongside the label.
+  const accountIdRef = useRef<string | null>(null);
 
   const form = useForm<ContactFormData>({
     resolver: zodResolver(contactSchema),
     defaultValues: {
       contact_name: "",
       company_name: "",
+      account_id: null,
       position: "",
       email: "",
       phone_no: "",
@@ -98,9 +119,11 @@ export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: Contact
 
   useEffect(() => {
     if (contact) {
+      accountIdRef.current = contact.account_id ?? null;
       form.reset({
         contact_name: contact.contact_name || "",
         company_name: contact.company_name || "",
+        account_id: contact.account_id ?? null,
         position: contact.position || "",
         email: contact.email || "",
         phone_no: contact.phone_no || "",
@@ -112,9 +135,11 @@ export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: Contact
         description: contact.description || "",
       });
     } else {
+      accountIdRef.current = null;
       form.reset({
-        contact_name: "",
-        company_name: "",
+        contact_name: prefillName || "",
+        company_name: prefillCompany || "",
+        account_id: null,
         position: "",
         email: "",
         phone_no: "",
@@ -126,13 +151,13 @@ export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: Contact
         description: "",
       });
     }
-  }, [contact, form]);
+  }, [contact, prefillName, prefillCompany, form]);
 
   const onSubmit = async (data: ContactFormData) => {
     try {
       setLoading(true);
       const user = await supabase.auth.getUser();
-      
+
       if (!user.data.user) {
         toast({
           title: "Error",
@@ -142,9 +167,12 @@ export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: Contact
         return;
       }
 
-      const contactData = {
+      const baseData = {
         contact_name: data.contact_name,
         company_name: data.company_name || null,
+        // account_id is now first-class — the AccountSearchableDropdown records
+        // the id via onAccountSelect, and clearing the name clears the id too.
+        account_id: accountIdRef.current || null,
         position: data.position || null,
         email: data.email || null,
         phone_no: data.phone_no || null,
@@ -154,50 +182,52 @@ export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: Contact
         industry: data.industry || null,
         region: data.region || null,
         description: data.description || null,
-        created_by: user.data.user.id,
         modified_by: user.data.user.id,
-        contact_owner: user.data.user.id,
       };
 
       if (contact) {
-        const { data, error } = await supabase
+        // Update: do NOT overwrite contact_owner on edit — ownership must not
+        // silently reassign to whoever last edited the record.
+        const { data: updated, error } = await supabase
           .from('contacts')
           .update({
-            ...contactData,
+            ...baseData,
             modified_time: new Date().toISOString(),
           })
           .eq('id', contact.id)
           .select()
-          .single();
+          .maybeSingle();
 
         if (error) throw error;
 
-        // Log update operation
-        await logUpdate('contacts', contact.id, contactData, contact);
+        await logUpdate('contacts', contact.id, baseData, contact);
 
-        toast({
-          title: "Success",
-          description: "Contact updated successfully",
-        });
+        toast({ title: "Success", description: "Contact updated successfully" });
+        onSuccess(updated || undefined);
       } else {
-        const { data, error } = await supabase
+        // Create: assign ownership + creator to current user.
+        const insertData = {
+          ...baseData,
+          created_by: user.data.user.id,
+          contact_owner: user.data.user.id,
+        };
+        const { data: created, error } = await supabase
           .from('contacts')
-          .insert(contactData)
+          .insert(insertData)
           .select()
-          .single();
+          .maybeSingle();
 
         if (error) throw error;
+        if (created?.id) {
+          await logCreate('contacts', created.id, insertData);
+        } else {
+          console.warn('[ContactModal] insert succeeded but no row returned (likely RLS SELECT restricted)');
+        }
 
-        // Log create operation
-        await logCreate('contacts', data.id, contactData);
-
-        toast({
-          title: "Success",
-          description: "Contact created successfully",
-        });
+        toast({ title: "Success", description: "Contact created successfully" });
+        onSuccess(created || undefined);
       }
 
-      onSuccess();
       onOpenChange(false);
     } catch (error) {
       console.error('Error saving contact:', error);
@@ -215,13 +245,18 @@ export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: Contact
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>
-            {contact ? "Edit Contact" : "Add New Contact"}
-          </DialogTitle>
+          <DialogTitle>{contact ? "Edit Contact" : "Add New Contact"}</DialogTitle>
         </DialogHeader>
 
         <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+          <form
+            noValidate
+            onSubmit={(e) => {
+              e.stopPropagation();
+              form.handleSubmit(onSubmit)(e);
+            }}
+            className="space-y-4"
+          >
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <FormField
                 control={form.control}
@@ -246,7 +281,20 @@ export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: Contact
                     <FormControl>
                       <AccountSearchableDropdown
                         value={field.value || ""}
-                        onValueChange={field.onChange}
+                        onValueChange={(val) => {
+                          // val is the display name (useNameAsValue defaults true).
+                          // Clearing (val === "") also clears the tracked id.
+                          field.onChange(val);
+                          if (!val) {
+                            accountIdRef.current = null;
+                            form.setValue("account_id", null);
+                          }
+                        }}
+                        onAccountSelect={(acc) => {
+                          accountIdRef.current = acc.id;
+                          form.setValue("account_id", acc.id);
+                          field.onChange(acc.account_name);
+                        }}
                         placeholder="Select account..."
                       />
                     </FormControl>
@@ -331,7 +379,8 @@ export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: Contact
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Contact Source</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
+                    <Select onValueChange={field.onChange} value={field.value ?? ""}>
+
                       <FormControl>
                         <SelectTrigger>
                           <SelectValue placeholder="Select source" />
@@ -339,9 +388,7 @@ export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: Contact
                       </FormControl>
                       <SelectContent>
                         {contactSources.map((source) => (
-                          <SelectItem key={source} value={source}>
-                            {source}
-                          </SelectItem>
+                          <SelectItem key={source} value={source}>{source}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -356,7 +403,8 @@ export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: Contact
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Industry</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
+                    <Select onValueChange={field.onChange} value={field.value ?? ""}>
+
                       <FormControl>
                         <SelectTrigger>
                           <SelectValue placeholder="Select industry" />
@@ -364,9 +412,7 @@ export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: Contact
                       </FormControl>
                       <SelectContent>
                         {industries.map((industry) => (
-                          <SelectItem key={industry} value={industry}>
-                            {industry}
-                          </SelectItem>
+                          <SelectItem key={industry} value={industry}>{industry}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -381,7 +427,7 @@ export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: Contact
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Region</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
+                    <Select onValueChange={field.onChange} value={field.value ?? ""}>
                       <FormControl>
                         <SelectTrigger>
                           <SelectValue placeholder="Select region" />
@@ -389,9 +435,7 @@ export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: Contact
                       </FormControl>
                       <SelectContent>
                         {regions.map((region) => (
-                          <SelectItem key={region} value={region}>
-                            {region}
-                          </SelectItem>
+                          <SelectItem key={region} value={region}>{region}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -399,6 +443,7 @@ export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: Contact
                   </FormItem>
                 )}
               />
+
             </div>
 
             <FormField
@@ -408,10 +453,10 @@ export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: Contact
                 <FormItem>
                   <FormLabel>Description</FormLabel>
                   <FormControl>
-                    <Textarea 
+                    <Textarea
                       placeholder="Additional notes about the contact..."
                       className="min-h-20"
-                      {...field} 
+                      {...field}
                     />
                   </FormControl>
                   <FormMessage />
@@ -420,11 +465,7 @@ export const ContactModal = ({ open, onOpenChange, contact, onSuccess }: Contact
             />
 
             <div className="flex justify-end gap-2 pt-4">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => onOpenChange(false)}
-              >
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
                 Cancel
               </Button>
               <Button type="submit" disabled={loading}>

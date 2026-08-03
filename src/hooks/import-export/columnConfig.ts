@@ -166,6 +166,7 @@ export const getColumnConfig = (table: string): ColumnConfig => {
         'expected_closing_date',
         'is_recurring',
         'customer_challenges',
+        'current_solution',
         'business_value',
         'decision_maker_level',
         'total_contract_value',
@@ -189,12 +190,21 @@ export const getColumnConfig = (table: string): ColumnConfig => {
         'implementation_start_date',
         'handoff_status',
         'lost_reason',
-        'need_improvement',
-        'drop_reason'
+        'drop_reason',
+        'po_status',
+        'expected_signing_date',
+        'hold_reason',
+        'revise_date',
+        'opportunity_summary',
+        'opportunity_description',
+        'customer_objection',
+        'competition',
+        'competitors',
+        'final_tcv'
       ],
       required: ['deal_name', 'stage'],
       enums: {
-        stage: ['Lead', 'Discussions', 'Qualified', 'RFQ', 'Offered', 'Won', 'Lost', 'Dropped'],
+        stage: ['Lead', 'Discussions', 'Qualified', 'RFQ', 'Offered', 'Negotiation', 'Verbal Approval', 'Won', 'Lost', 'Hold', 'Dropped'],
         currency_type: ['EUR', 'USD', 'INR'],
         customer_challenges: ['Open', 'Ongoing', 'Done'],
         relationship_strength: ['Low', 'Medium', 'High'],
@@ -202,7 +212,10 @@ export const getColumnConfig = (table: string): ColumnConfig => {
         decision_maker_level: ['Open', 'Ongoing', 'Done'],
         is_recurring: ['Yes', 'No', 'Unclear'],
         rfq_status: ['Drafted', 'Submitted', 'Rejected', 'Accepted'],
-        handoff_status: ['Not Started', 'In Progress', 'Complete']
+        handoff_status: ['Not Started', 'In Progress', 'Complete'],
+        po_status: ['Not Required', 'Awaiting PO', 'In Process', 'Received'],
+        competition: ['Yes', 'No'],
+        hold_reason: ['Budget Freeze', 'Project Delayed', 'Waiting Approval', 'Procurement Delay', 'Technical Review', 'Resource Constraint', 'Customer Request', 'Other']
       }
     }
   };

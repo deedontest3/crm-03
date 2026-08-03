@@ -18,6 +18,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { StandardPagination } from "@/components/shared/StandardPagination";
 import TemplatePreviewModal from "./email/TemplatePreviewModal";
 import { AIDraftEmailModal } from "@/components/campaigns/AIDraftEmailModal";
+import { AppLoader } from "@/components/ui/loader";
 
 interface EmailTemplate {
   id: string;
@@ -248,7 +249,7 @@ const EmailTemplatesSettings = () => {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+          <AppLoader variant="panel" />
           <p className="text-muted-foreground">Loading templates...</p>
         </div>
       </div>

@@ -14,12 +14,10 @@ export function useDuplicateSendGuard(campaignId: string) {
   const { data: windowDays = 3 } = useQuery({
     queryKey: ["duplicate-send-window-days"],
     queryFn: async () => {
-      const { data } = await supabase
-        .from("campaign_settings")
-        .select("setting_value")
-        .eq("setting_key", "duplicate_send_window_days")
-        .maybeSingle();
-      const n = Number(data?.setting_value);
+      const { data } = await (supabase as any).rpc("get_campaign_setting", {
+        _key: "duplicate_send_window_days",
+      });
+      const n = Number(data);
       return Number.isFinite(n) && n > 0 ? n : 3;
     },
     staleTime: 10 * 60_000,
@@ -35,7 +33,7 @@ export function useDuplicateSendGuard(campaignId: string) {
       .eq("communication_type", "Email")
       .in("contact_id", contactIds)
       .gte("communication_date", cutoff)
-      .or("sent_via.eq.azure,sent_via.eq.manual");
+      .in("sent_via", ["azure", "manual", "sequence_runner", "follow_up_automation"]);
     if (error || !data) return new Set();
     return new Set(data.map((r) => r.contact_id).filter(Boolean) as string[]);
   };

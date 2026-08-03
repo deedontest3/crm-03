@@ -42,14 +42,15 @@ export const ContactColumnCustomizer = ({
   const handleReset = () => {
     const defaultColumns: ContactColumnConfig[] = [
       { field: 'contact_name', label: 'Contact Name', visible: true, order: 0 },
-      { field: 'company_name', label: 'Company Name', visible: true, order: 1 },
-      { field: 'position', label: 'Position', visible: true, order: 2 },
-      { field: 'email', label: 'Email', visible: true, order: 3 },
-      { field: 'phone_no', label: 'Phone', visible: true, order: 4 },
-      { field: 'region', label: 'Region', visible: true, order: 5 },
-      { field: 'contact_owner', label: 'Contact Owner', visible: true, order: 6 },
-      { field: 'industry', label: 'Industry', visible: true, order: 7 },
-      { field: 'contact_source', label: 'Source', visible: true, order: 8 },
+      { field: 'linked_deals', label: 'Linked Deals', visible: true, order: 1 },
+      { field: 'company_name', label: 'Company Name', visible: true, order: 2 },
+      { field: 'position', label: 'Position', visible: true, order: 3 },
+      { field: 'email', label: 'Email', visible: true, order: 4 },
+      { field: 'phone_no', label: 'Phone', visible: true, order: 5 },
+      { field: 'region', label: 'Region', visible: true, order: 6 },
+      { field: 'contact_owner', label: 'Contact Owner', visible: true, order: 7 },
+      { field: 'industry', label: 'Industry', visible: true, order: 8 },
+      { field: 'contact_source', label: 'Source', visible: true, order: 9 },
     ];
     setLocalColumns(defaultColumns);
   };

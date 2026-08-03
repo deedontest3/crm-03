@@ -46,16 +46,11 @@ export function normalizeChannelValue(v?: string | null): string {
   return t === "Call" ? "Phone" : t;
 }
 
-/** Resolve enabled channels for a campaign with legacy fallback to primary_channel. */
-export function getEnabledChannels(campaign: { enabled_channels?: string[] | null; primary_channel?: string | null } | null | undefined): ChannelKey[] {
-  if (!campaign) return [...ALL_CHANNELS];
-  const arr = (campaign.enabled_channels || []).map(normalizeChannelValue).filter(Boolean) as ChannelKey[];
-  if (arr.length > 0) return arr.filter((c) => (ALL_CHANNELS as readonly string[]).includes(c));
-  // Legacy: derive from primary_channel
-  const pc = normalizeChannelValue(campaign.primary_channel);
-  if (pc && (ALL_CHANNELS as readonly string[]).includes(pc)) return [pc as ChannelKey];
-  return [...ALL_CHANNELS];
-}
+// NOTE: an earlier duplicate `getEnabledChannels` lived here. All real call
+// sites import from `@/components/campaigns/channelVisibility` — the version
+// here was dead code and slightly buggier (filtered invalid values after
+// checking length, so it could wrongly return an empty result). Removed to
+// prevent a future edit landing on the wrong copy.
 
 export const PRIORITY_BADGE_CLASS: Record<string, string> = {
   Low: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400",

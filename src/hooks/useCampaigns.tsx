@@ -3,9 +3,37 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "@/hooks/use-toast";
 import { useSecurityAudit } from "@/hooks/useSecurityAudit";
-import type { Tables } from "@/integrations/supabase/types";
-
-export type Campaign = Tables<"campaigns">;
+// NOTE: `campaigns` table is not in the generated Supabase types yet.
+// Define the row shape locally so dependent components type-check correctly.
+export interface Campaign {
+  id: string;
+  created_at: string;
+  modified_at?: string | null;
+  created_by?: string | null;
+  modified_by?: string | null;
+  campaign_name: string;
+  campaign_type: string;
+  goal: string;
+  owner: string;
+  start_date: string;
+  end_date: string;
+  status: string;
+  notes?: string | null;
+  description?: string | null;
+  region?: string | null;
+  country?: string | null;
+  target_audience?: string | null;
+  message_strategy?: string | null;
+  mart_complete?: boolean | null;
+  priority?: string | null;
+  primary_channel?: string | null;
+  enabled_channels?: string[] | null;
+  tags?: string[] | null;
+  archived_at: string | null;
+  archived_by?: string | null;
+  slug?: string | null;
+  [key: string]: any;
+}
 
 export interface CampaignFormData {
   campaign_name: string;
@@ -825,18 +853,27 @@ export function useCampaignDetail(
   const communicationsQuery = useQuery({
     queryKey: ["campaign-communications", campaignId, "detail"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("campaign_communications")
-        .select("*, contacts(contact_name), accounts(account_name)")
-        .eq("campaign_id", campaignId!)
-        .order("communication_date", { ascending: false });
-      if (error) throw error;
-      return data;
+      // Page through campaign_communications so long histories aren't silently
+      // truncated at PostgREST's default max-rows cap (commonly 1000). Without
+      // this, analytics and thread counts on multi-sequence campaigns would
+      // undercount with no indication to the user.
+      const { fetchAllPaged } = await import("@/lib/paginatedFetch");
+      const { rows } = await fetchAllPaged<any>((from, to) =>
+        supabase
+          .from("campaign_communications")
+          .select("*, contacts(contact_name), accounts(account_name)")
+          .eq("campaign_id", campaignId!)
+          .order("communication_date", { ascending: false })
+          .order("id", { ascending: false })
+          .range(from, to),
+      );
+      return rows;
     },
     enabled: needCommunications,
     staleTime: DETAIL_STALE_TIME,
     gcTime: DETAIL_GC_TIME,
   });
+
 
   const emailTemplatesQuery = useQuery({
     queryKey: ["campaign-email-templates", campaignId],

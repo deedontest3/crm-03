@@ -62,7 +62,7 @@ export const ColumnCustomizer = ({ columns, onUpdate }: ColumnCustomizerProps) =
       { field: 'stage', label: 'Stage', visible: true, order: 3 },
       { field: 'priority', label: 'Priority', visible: true, order: 4 },
       { field: 'total_contract_value', label: 'Value', visible: true, order: 5 },
-      { field: 'expected_closing_date', label: 'Expected Close', visible: true, order: 6 },
+      { field: 'expected_closing_date', label: 'Target Closure date', visible: true, order: 6 },
       
       // Lead stage fields
       { field: 'lead_name', label: 'Lead Name', visible: false, order: 7 },
@@ -73,6 +73,7 @@ export const ColumnCustomizer = ({ columns, onUpdate }: ColumnCustomizerProps) =
       // Discussions stage fields
       { field: 'customer_need', label: 'Customer Need', visible: false, order: 11 },
       { field: 'customer_challenges', label: 'Customer Challenges', visible: false, order: 12 },
+      { field: 'current_solution', label: 'Current Solution', visible: false, order: 12.5 },
       { field: 'relationship_strength', label: 'Relationship Strength', visible: false, order: 13 },
       
       // Qualified stage fields
@@ -96,12 +97,11 @@ export const ColumnCustomizer = ({ columns, onUpdate }: ColumnCustomizerProps) =
       // Final stage fields
       { field: 'won_reason', label: 'Won Reason', visible: false, order: 26 },
       { field: 'lost_reason', label: 'Lost Reason', visible: false, order: 27 },
-      { field: 'need_improvement', label: 'Need Improvement', visible: false, order: 28 },
-      { field: 'drop_reason', label: 'Drop Reason', visible: false, order: 29 },
+      { field: 'drop_reason', label: 'Drop Reason', visible: false, order: 28 },
       
       // System fields
-      { field: 'created_at', label: 'Created', visible: false, order: 30 },
-      { field: 'modified_at', label: 'Updated', visible: false, order: 31 },
+      { field: 'created_at', label: 'Created', visible: false, order: 29 },
+      { field: 'modified_at', label: 'Updated', visible: false, order: 30 },
     ];
     setLocalColumns(allAvailableFields);
   };
@@ -143,7 +143,7 @@ export const ColumnCustomizer = ({ columns, onUpdate }: ColumnCustomizerProps) =
                           {(provided, snapshot) => (
                             <div
                               ref={provided.innerRef}
-                              {...provided.draggableProps}
+                              {...(provided.draggableProps as any)}
                               className={`flex items-center space-x-3 p-3 border rounded-lg transition-all duration-200 ${
                                 snapshot.isDragging ? 'bg-primary/10 border-primary shadow-md scale-105' : 'bg-card hover:bg-muted/30 hover:shadow-sm'
                               }`}

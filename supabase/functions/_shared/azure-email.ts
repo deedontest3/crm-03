@@ -215,29 +215,37 @@ function injectCorrelationMarker(htmlBody: string, token: string): string {
 }
 
 /**
- * Decide whether to use standard RFC 5322 header names (`In-Reply-To`,
- * `References`) or Microsoft's `x-` prefixed variants. Standard names are
- * what Gmail/Outlook actually use for threading; the `x-` variants only
- * exist because older Graph builds rejected non-prefixed custom headers.
+ * Microsoft Graph's `sendMail` rejects standard RFC 5322 header names
+ * (`In-Reply-To`, `References`) inside `internetMessageHeaders`. The
+ * supported way to set those headers under plain `Mail.Send` permission
+ * (i.e. without `Mail.ReadWrite`) is to attach MAPI extended properties:
  *
- * Strategy: try standard names first. If Graph rejects with
- * ErrorInvalidInternetMessageHeader, the caller retries with `x-` prefix.
+ *   - `String 0x1042` (PR_IN_REPLY_TO_ID)        → In-Reply-To header
+ *   - `String 0x1039` (PR_INTERNET_REFERENCES)   → References header
+ *   - `String 0x0070` (PR_CONVERSATION_TOPIC)    → Outlook conversation
+ *
+ * Both Outlook (conversation view) and Gmail (RFC threading) honour these,
+ * so a plain `sendMail` with these properties keeps the reply in-thread
+ * even when the much-stricter `createReply` endpoint is denied.
  */
-function buildThreadingHeaders(
-  replyToInternetMessageId: string | undefined,
-  prevReferences: string | undefined,
-  useXPrefix: boolean,
-): InternetHeader[] {
-  if (!replyToInternetMessageId) return [];
-  const irtName = useXPrefix ? "x-In-Reply-To" : "In-Reply-To";
-  const refsName = useXPrefix ? "x-References" : "References";
-  const refsValue = (prevReferences || "").trim()
-    ? `${(prevReferences || "").trim()} ${replyToInternetMessageId}`
-    : replyToInternetMessageId;
-  return [
-    { name: irtName, value: replyToInternetMessageId },
-    { name: refsName, value: refsValue },
-  ];
+interface ExtendedProperty { id: string; value: string }
+function buildThreadingExtendedProperties(opts: {
+  parentInternetMessageId?: string;
+  previousReferences?: string;
+  conversationTopic?: string;
+}): ExtendedProperty[] {
+  const out: ExtendedProperty[] = [];
+  const parent = (opts.parentInternetMessageId || "").trim();
+  if (parent) {
+    out.push({ id: "String 0x1042", value: parent });
+    const refs = [opts.previousReferences || "", parent].map(s => s.trim()).filter(Boolean).join(" ");
+    out.push({ id: "String 0x1039", value: refs });
+  }
+  const topic = (opts.conversationTopic || "").trim();
+  if (topic) {
+    out.push({ id: "String 0x0070", value: topic.replace(/^(re|fw|fwd)\s*:\s*/gi, "").trim() });
+  }
+  return out;
 }
 
 export async function sendEmailViaGraph(
@@ -252,7 +260,7 @@ export async function sendEmailViaGraph(
   replyToInternetMessageId?: string,
   attachments?: GraphAttachment[],
   internetMessageHeaders?: InternetHeader[],
-  options?: { correlationToken?: string; previousReferences?: string },
+  options?: { correlationToken?: string; previousReferences?: string; parentMailbox?: string; conversationTopic?: string },
 ): Promise<SendEmailResult> {
   const senderMailbox = (fromEmail || senderEmail).trim();
   const encodedMailbox = encodeURIComponent(senderMailbox);
@@ -269,6 +277,15 @@ export async function sendEmailViaGraph(
   const correlationToken = options?.correlationToken || makeCorrelationToken();
   const finalHtmlBody = injectCorrelationMarker(htmlBody, correlationToken);
 
+  // === MAILBOX SELECTION FOR createReply ===
+  // The parent message lives in whichever mailbox originally sent it. If the
+  // parent was sent as a shared mailbox (e.g. crm@realthingks.com) but the
+  // current send is going through a user mailbox (e.g. user@realthingks.com),
+  // calling createReply against the user mailbox returns 403 ErrorAccessDenied
+  // because Graph can't find the message there. Use the parent's mailbox.
+  const replyMailbox = (options?.parentMailbox || senderMailbox).trim();
+  const encodedReplyMailbox = encodeURIComponent(replyMailbox);
+
   // Reply path A — auto-resolve graphMessageId from internetMessageId if the
   // caller didn't have it cached (handles the case where the original send's
   // metadata capture failed and we never stored graph_message_id).
@@ -276,7 +293,7 @@ export async function sendEmailViaGraph(
   if (!resolvedReplyGraphId && replyToInternetMessageId) {
     resolvedReplyGraphId = await findSentMessageGraphId(
       accessToken,
-      senderMailbox,
+      replyMailbox,
       replyToInternetMessageId,
       null,
     );
@@ -289,7 +306,7 @@ export async function sendEmailViaGraph(
   // thread together in Outlook AND Gmail.
   if (resolvedReplyGraphId) {
     try {
-      const createReplyUrl = `https://graph.microsoft.com/v1.0/users/${encodedMailbox}/messages/${resolvedReplyGraphId}/createReply`;
+      const createReplyUrl = `https://graph.microsoft.com/v1.0/users/${encodedReplyMailbox}/messages/${resolvedReplyGraphId}/createReply`;
       const createResp = await fetch(createReplyUrl, {
         method: "POST",
         headers: {
@@ -316,7 +333,7 @@ export async function sendEmailViaGraph(
             }));
           }
           const patchResp = await fetch(
-            `https://graph.microsoft.com/v1.0/users/${encodedMailbox}/messages/${draftId}`,
+            `https://graph.microsoft.com/v1.0/users/${encodedReplyMailbox}/messages/${draftId}`,
             {
               method: "PATCH",
               headers: {
@@ -328,16 +345,17 @@ export async function sendEmailViaGraph(
           );
           if (patchResp.ok) {
             const sendResp = await fetch(
-              `https://graph.microsoft.com/v1.0/users/${encodedMailbox}/messages/${draftId}/send`,
+              `https://graph.microsoft.com/v1.0/users/${encodedReplyMailbox}/messages/${draftId}/send`,
               {
                 method: "POST",
                 headers: { Authorization: `Bearer ${accessToken}` },
               },
             );
             if (sendResp.ok) {
+              // Look up metadata in the mailbox where the reply was actually sent.
               const metadata = await fetchSentMessageMetadata(
                 accessToken,
-                senderMailbox,
+                replyMailbox,
                 finalSubject,
                 recipientEmail,
                 correlationToken,
@@ -360,21 +378,25 @@ export async function sendEmailViaGraph(
         }
       } else {
         const errBody = await createResp.text();
-        if (createResp.status === 403) {
-          let errorCode = "ErrorAccessDenied";
-          try { errorCode = JSON.parse(errBody)?.error?.code || errorCode; } catch { /* ignore */ }
-          return { success: false, error: errBody, errorCode, sentAsUser: false };
-        }
-        console.warn(`createReply failed (${createResp.status}); falling back to sendMail with headers. ${errBody}`);
+        // createReply requires Mail.ReadWrite (not just Mail.Send) because it
+        // reads + modifies a message in Sent Items. If the app only has
+        // Mail.Send, this returns 403. That's fine — fall through to plain
+        // sendMail + MAPI extended properties below, which keep the message
+        // in-thread under Mail.Send alone.
+        console.warn(`createReply unavailable for ${replyMailbox} (HTTP ${createResp.status}); falling through to sendMail with threading properties. ${errBody.slice(0, 300)}`);
       }
     } catch (e) {
-      console.warn("Native reply path threw, falling back to sendMail:", (e as Error).message);
+      console.warn("createReply path threw, falling through to sendMail:", (e as Error).message);
     }
+    // Intentional fall-through to sendMail block below. We do NOT hard-fail
+    // here anymore — sendMail with `singleValueExtendedProperties` carrying
+    // PR_IN_REPLY_TO_ID + PR_INTERNET_REFERENCES gives Outlook & Gmail
+    // proper RFC threading without needing Mail.ReadWrite.
   }
 
-  // Reply path B / new send: sendMail with In-Reply-To / References headers.
-  // Try STANDARD header names first (RFC 5322) — Gmail/Outlook honour these
-  // for threading. If Graph rejects them, retry with `x-` prefix.
+  // sendMail path — used both for fresh sends AND as the universal reply
+  // fallback when createReply is denied. Threading on replies is achieved
+  // via MAPI extended properties (see buildThreadingExtendedProperties).
   const sendUrl = `https://graph.microsoft.com/v1.0/users/${encodedMailbox}/sendMail`;
   const baseAttachments = attachments && attachments.length > 0
     ? attachments.map((a) => ({
@@ -385,76 +407,56 @@ export async function sendEmailViaGraph(
       }))
     : undefined;
 
-  const buildSendPayload = (useXPrefix: boolean) => {
-    const message: Record<string, unknown> = {
-      subject: finalSubject,
-      body: { contentType: "HTML", content: finalHtmlBody },
-      toRecipients: [{ emailAddress: { address: recipientEmail, name: recipientName } }],
-    };
-    if (baseAttachments) message.attachments = baseAttachments;
-
-    const threadingHeaders = buildThreadingHeaders(
-      replyToInternetMessageId,
-      options?.previousReferences,
-      useXPrefix,
-    );
-    // Caller-supplied custom headers must keep `x-` prefix per Graph contract.
-    const callerHeaders = (internetMessageHeaders || []).map((h) => ({
-      name: h.name.startsWith("x-") || h.name.startsWith("X-") ? h.name : `x-${h.name}`,
-      value: h.value,
-    }));
-    const allHeaders = [...threadingHeaders, ...callerHeaders];
-    if (allHeaders.length > 0) message.internetMessageHeaders = allHeaders;
-    return { message, saveToSentItems: true };
+  const message: Record<string, unknown> = {
+    subject: finalSubject,
+    body: { contentType: "HTML", content: finalHtmlBody },
+    toRecipients: [{ emailAddress: { address: recipientEmail, name: recipientName } }],
   };
+  if (baseAttachments) message.attachments = baseAttachments;
 
-  // First try standard header names.
-  let sendResp = await fetch(sendUrl, {
+  // Attach RFC threading via MAPI extended properties on replies. This
+  // works under Mail.Send permission alone (no Mail.ReadWrite needed) and
+  // produces the same In-Reply-To / References headers createReply would.
+  const isReply = !!(replyToInternetMessageId || replyToGraphMessageId);
+  if (isReply) {
+    const extProps = buildThreadingExtendedProperties({
+      parentInternetMessageId: replyToInternetMessageId,
+      previousReferences: options?.previousReferences,
+      conversationTopic: options?.conversationTopic || finalSubject,
+    });
+    if (extProps.length > 0) {
+      message.singleValueExtendedProperties = extProps;
+    }
+  }
+
+  const callerHeaders = (internetMessageHeaders || []).map((h) => ({
+    name: h.name.startsWith("x-") || h.name.startsWith("X-") ? h.name : `x-${h.name}`,
+    value: h.value,
+  }));
+  if (callerHeaders.length > 0) message.internetMessageHeaders = callerHeaders;
+
+  const sendResp = await fetch(sendUrl, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(buildSendPayload(false)),
+    body: JSON.stringify({ message, saveToSentItems: true }),
   });
-
-  // Graph rejects non-`x-` custom headers with 400 ErrorInvalidInternetMessageHeader.
-  // Retry once with `x-` prefix as a compatibility fallback.
-  if (!sendResp.ok && replyToInternetMessageId) {
-    const firstErrText = await sendResp.text();
-    let isHeaderError = false;
-    try {
-      const parsed = JSON.parse(firstErrText);
-      const code = parsed?.error?.code || "";
-      const msg = parsed?.error?.message || "";
-      isHeaderError = /InvalidInternetMessageHeader|invalid header/i.test(`${code} ${msg}`);
-    } catch { /* ignore */ }
-
-    if (isHeaderError) {
-      console.warn(`Standard threading headers rejected by Graph; retrying with x- prefix.`);
-      sendResp = await fetch(sendUrl, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(buildSendPayload(true)),
-      });
-    } else {
-      // Restore the original error response shape so the !ok branch below sees it.
-      sendResp = new Response(firstErrText, { status: sendResp.status });
-    }
-  }
 
   if (!sendResp.ok) {
     const errBody = await sendResp.text();
     let errorCode = "SEND_FAILED";
+    let errorMessage = errBody;
     try {
       const parsed = JSON.parse(errBody);
       errorCode = parsed?.error?.code || "SEND_FAILED";
+      // Surface a clean human message: "<code>: <message> (HTTP <status>)"
+      const graphMsg = parsed?.error?.message || errBody;
+      errorMessage = `${errorCode}: ${graphMsg} (HTTP ${sendResp.status})`;
     } catch { /* ignore */ }
     console.error(`Graph sendMail failed for ${recipientEmail} from ${senderMailbox}: ${sendResp.status} ${errBody}`);
-    return { success: false, error: errBody, errorCode, sentAsUser: false };
+    return { success: false, error: errorMessage, errorCode, sentAsUser: false };
   }
 
   await sendResp.text();

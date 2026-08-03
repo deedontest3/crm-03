@@ -42,7 +42,7 @@ export const ContactTableHeader = ({
   };
 
   const getSortIcon = (field: string) => {
-    if (sortField !== field) return <ArrowUpDown className="w-4 h-4" />;
+    if (sortField !== field) return null;
     return sortDirection === 'asc' ? <ArrowUp className="w-4 h-4" /> : <ArrowDown className="w-4 h-4" />;
   };
   

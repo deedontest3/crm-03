@@ -1,0 +1,1 @@
+ALTER TABLE public.yearly_revenue_targets ADD COLUMN IF NOT EXISTS currency text NOT NULL DEFAULT 'EUR';

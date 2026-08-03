@@ -13,5 +13,5 @@ Allow: /
 User-agent: *
 Allow: /
 
-
+Sitemap: https://crmpreview.lovable.app/sitemap.xml
 

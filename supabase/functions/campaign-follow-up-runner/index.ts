@@ -1,9 +1,10 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { getAzureEmailConfig, getGraphAccessToken, sendEmailViaGraph } from "../_shared/azure-email.ts";
+import { requireCronSecret } from "../_shared/auth-gate.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-cron-secret",
 };
 
 // Subtract N business days (Mon–Fri only) from "now"
@@ -134,6 +135,61 @@ async function getOwnerName(supabase: any, ownerId: string | null): Promise<stri
   return (prof as any)?.full_name || "";
 }
 
+/**
+ * Resolve the mailbox a follow-up should be sent FROM.
+ *
+ * Threading + attribution rule (industry standard for sequences):
+ *   - The follow-up MUST come from the same mailbox that sent the parent
+ *     message. Otherwise the recipient sees a different sender, the
+ *     conversationId stored against the user mailbox is invisible to the
+ *     shared mailbox, and Outlook starts a fresh thread on the recipient
+ *     side. Replies then route to the wrong mailbox and the reply checker
+ *     can't always stitch them back.
+ *
+ * Fallbacks:
+ *   1. parent.sender_email (canonical — that's the mailbox that owns the
+ *      parent's conversation).
+ *   2. campaign owner's profile email.
+ *   3. shared mailbox (`AZURE_SENDER_EMAIL`) ONLY as a last resort, with a
+ *      `MAILBOX_DELEGATION_FALLBACK` warning logged so admins can fix.
+ */
+async function resolveFollowUpSender(
+  supabase: any,
+  parent: { sender_email?: string | null },
+  ownerId: string | null,
+  sharedMailbox: string,
+): Promise<{ mailbox: string; isFallback: boolean; reason?: string }> {
+  const parentSender = (parent?.sender_email || "").trim();
+  if (parentSender && parentSender.toLowerCase() !== sharedMailbox.toLowerCase()) {
+    return { mailbox: parentSender, isFallback: false };
+  }
+  if (parentSender && parentSender.toLowerCase() === sharedMailbox.toLowerCase()) {
+    // The parent itself was sent from the shared mailbox — preserve threading.
+    return { mailbox: sharedMailbox, isFallback: false };
+  }
+  if (ownerId) {
+    const { data: prof } = await supabase
+      .from("profiles")
+      .select("email")
+      .eq("id", ownerId)
+      .maybeSingle();
+    const ownerEmail = (prof as any)?.email?.trim();
+    if (ownerEmail) {
+      return {
+        mailbox: ownerEmail,
+        isFallback: true,
+        reason: "MAILBOX_DELEGATION_FALLBACK_owner_profile",
+      };
+    }
+  }
+  return {
+    mailbox: sharedMailbox,
+    isFallback: true,
+    reason: "MAILBOX_DELEGATION_FALLBACK_shared",
+  };
+}
+
+
 // Append a row to campaign_sequence_runs. Best-effort: never blocks the loop.
 async function logRun(
   supabase: any,
@@ -195,16 +251,11 @@ async function shouldSkipRecipient(
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
-  // Cron auth: only accept calls bearing the shared vault secret.
-  const expectedCronSecret = Deno.env.get("CAMPAIGN_CRON_SECRET");
-  if (expectedCronSecret) {
-    const got = req.headers.get("x-cron-secret");
-    if (got !== expectedCronSecret) {
-      return new Response(JSON.stringify({ error: "Forbidden" }), {
-        status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-  }
+  // Cron-only endpoint. Fail-closed: shared helper returns 500 if the
+  // CAMPAIGN_CRON_SECRET env var is unset (previously this silently skipped auth).
+  const cron = requireCronSecret(req);
+  if ("response" in cron) return cron.response;
+
 
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
@@ -283,7 +334,7 @@ Deno.serve(async (req) => {
 
         const parentQuery = supabase
           .from("campaign_communications")
-          .select("id, contact_id, account_id, subject, body, conversation_id, internet_message_id, opened_at, sequence_step, communication_date")
+          .select("id, contact_id, account_id, subject, body, conversation_id, internet_message_id, opened_at, sequence_step, communication_date, sender_email")
           .eq("campaign_id", campaignId)
           .eq("communication_type", "Email")
           .eq("delivery_status", "sent")
@@ -482,7 +533,12 @@ Deno.serve(async (req) => {
           const subject = substitute(template.subject || `Following up: ${parent.subject || ""}`, ctx);
           const bodyText = substitute(template.body || "", ctx);
           const htmlBody = ensureHtmlBody(bodyText);
-          const sendRequestId = await sha256Hex(`${campaignId}|${parent.contact_id}|sequence|${step.id}|${step.step_number}`);
+          // #8: include template_id + wait_business_days in the idempotency
+          // hash so retemplated sequence steps actually fire instead of being
+          // suppressed by the previous template's hash.
+          const sendRequestId = await sha256Hex(
+            `${campaignId}|${parent.contact_id}|sequence|${step.id}|${step.step_number}|tpl=${step.template_id || "none"}|wait=${step.wait_business_days}`,
+          );
 
           const { count: duplicateRequest } = await supabase
             .from("campaign_communications")
@@ -496,9 +552,25 @@ Deno.serve(async (req) => {
             continue;
           }
 
+          // #5: send the follow-up FROM the same mailbox that sent the parent
+          // so threading + recipient attribution stays consistent. Falls back
+          // to owner profile email, then shared mailbox (logged as such).
+          const senderResolution = await resolveFollowUpSender(
+            supabase,
+            parent,
+            ownerId,
+            azureConfig.senderEmail,
+          );
+          const followUpMailbox = senderResolution.mailbox;
+          if (senderResolution.isFallback) {
+            console.warn(
+              `[follow-up-runner] mailbox fallback for parent=${parent.id}: ${senderResolution.reason}`,
+            );
+          }
+
           const result = await sendEmailViaGraph(
             accessToken,
-            azureConfig.senderEmail,
+            followUpMailbox,
             contact.email,
             contact.contact_name || contact.email,
             subject,
@@ -506,6 +578,12 @@ Deno.serve(async (req) => {
             undefined,
             undefined,
             parent.internet_message_id || undefined,
+            undefined,
+            undefined,
+            {
+              parentMailbox: followUpMailbox,
+              conversationTopic: parent.subject || undefined,
+            },
           );
 
           const baseRow = {
@@ -527,22 +605,33 @@ Deno.serve(async (req) => {
             created_by: step.created_by,
             communication_date: new Date().toISOString(),
             sent_via: "sequence_runner",
+            sender_email: followUpMailbox,
+            sent_as_shared:
+              senderResolution.isFallback &&
+              followUpMailbox.toLowerCase() === azureConfig.senderEmail.toLowerCase(),
             notes: `Auto step ${step.step_number} via sequence ${step.id} (waited ${step.wait_business_days} business days, condition=${step.condition}).`,
           };
 
           if (result.success) {
-            const { data: sentRow } = await supabase.from("campaign_communications").insert({
+            // Insert may collide with the partial unique index on send_request_id
+            // if a concurrent runner tick raced us here. 23505 = unique violation
+            // → treat as "already fired", don't count as sent, don't double-log.
+            const { data: sentRow, error: sentErr } = await supabase.from("campaign_communications").insert({
               ...baseRow,
               email_status: "Sent",
               delivery_status: "sent",
             }).select("id").maybeSingle();
-            // Cap ledger row (automation also counts toward owner's cap).
+            if (sentErr && (sentErr as any).code === "23505") {
+              skipped++;
+              await logRun(supabase, { campaignId, sequenceId: step.id, stepNumber: step.step_number, contactId: parent.contact_id, outcome: 'skipped', reason: 'duplicate_race' });
+              continue;
+            }
             if (ownerId) {
               const { error: sendLogError } = await supabase.from("campaign_send_log").insert({
                 campaign_id: campaignId,
                 contact_id: parent.contact_id,
                 sender_user_id: ownerId,
-                mailbox_email: azureConfig.senderEmail.toLowerCase(),
+                mailbox_email: followUpMailbox.toLowerCase(),
                 send_request_id: sendRequestId,
                 correlation_id: sendRequestId,
               });
@@ -563,6 +652,7 @@ Deno.serve(async (req) => {
         }
       }
     }
+
 
     // ── 2) LEGACY RULE PATH (only fires for rules that haven't been
     //       back-filled into sequences yet — Phase B migration disables
@@ -597,7 +687,7 @@ Deno.serve(async (req) => {
       const cutoff = businessDaysAgo(rule.wait_business_days).toISOString();
       const { data: parents } = await supabase
         .from("campaign_communications")
-        .select("id, contact_id, account_id, subject, body, conversation_id, internet_message_id, follow_up_attempt")
+        .select("id, contact_id, account_id, subject, body, conversation_id, internet_message_id, follow_up_attempt, sender_email")
         .eq("campaign_id", rule.campaign_id)
         .eq("communication_type", "Email")
         .eq("delivery_status", "sent")
@@ -674,7 +764,11 @@ Deno.serve(async (req) => {
         const subject = substitute(template.subject || `Following up: ${parent.subject || ""}`, ctx);
         const bodyText = substitute(template.body || "", ctx);
         const htmlBody = ensureHtmlBody(bodyText);
-        const sendRequestId = await sha256Hex(`${rule.campaign_id}|${parent.contact_id}|legacy|${rule.id}|${(parent.follow_up_attempt || 0) + 1}`);
+        // #8: include template_id + wait in idempotency hash so retemplated
+        // legacy rules also get a fresh hash and re-fire.
+        const sendRequestId = await sha256Hex(
+          `${rule.campaign_id}|${parent.contact_id}|legacy|${rule.id}|${(parent.follow_up_attempt || 0) + 1}|tpl=${rule.template_id || "none"}|wait=${rule.wait_business_days}`,
+        );
 
         const { count: duplicateRequest } = await supabase
           .from("campaign_communications")
@@ -684,9 +778,23 @@ Deno.serve(async (req) => {
           .neq("delivery_status", "failed");
         if ((duplicateRequest ?? 0) > 0) { skipped++; continue; }
 
+        // #5: legacy rules also send from the original parent mailbox.
+        const senderResolution = await resolveFollowUpSender(
+          supabase,
+          parent,
+          ownerId,
+          azureConfig.senderEmail,
+        );
+        const followUpMailbox = senderResolution.mailbox;
+        if (senderResolution.isFallback) {
+          console.warn(
+            `[follow-up-runner] legacy mailbox fallback for parent=${parent.id}: ${senderResolution.reason}`,
+          );
+        }
+
         const result = await sendEmailViaGraph(
           accessToken,
-          azureConfig.senderEmail,
+          followUpMailbox,
           contact.email,
           contact.contact_name || contact.email,
           subject,
@@ -694,6 +802,12 @@ Deno.serve(async (req) => {
           undefined,
           undefined,
           parent.internet_message_id || undefined,
+          undefined,
+          undefined,
+          {
+            parentMailbox: followUpMailbox,
+            conversationTopic: parent.subject || undefined,
+          },
         );
 
         const baseRow = {
@@ -714,15 +828,24 @@ Deno.serve(async (req) => {
           created_by: rule.created_by,
           communication_date: new Date().toISOString(),
           sent_via: "follow_up_automation",
+          sender_email: followUpMailbox,
+          sent_as_shared:
+            senderResolution.isFallback &&
+            followUpMailbox.toLowerCase() === azureConfig.senderEmail.toLowerCase(),
           notes: `Auto follow-up by legacy rule ${rule.id} (waited ${rule.wait_business_days} business days, no reply).`,
         };
 
         if (result.success) {
-          await supabase.from("campaign_communications").insert({
+          const { error: sentErr } = await supabase.from("campaign_communications").insert({
             ...baseRow,
             email_status: "Sent",
             delivery_status: "sent",
           });
+          if (sentErr && (sentErr as any).code === "23505") {
+            // Concurrent legacy-rule tick already logged this send; skip.
+            skipped++;
+            continue;
+          }
           await supabase
             .from("campaign_communications")
             .update({ follow_up_attempt: (parent.follow_up_attempt || 0) + 1 })
@@ -732,7 +855,7 @@ Deno.serve(async (req) => {
               campaign_id: rule.campaign_id,
               contact_id: parent.contact_id,
               sender_user_id: ownerId,
-              mailbox_email: azureConfig.senderEmail.toLowerCase(),
+              mailbox_email: followUpMailbox.toLowerCase(),
               send_request_id: sendRequestId,
               correlation_id: sendRequestId,
             });

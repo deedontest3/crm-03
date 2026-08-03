@@ -4,7 +4,9 @@ import { findSentMessageGraphId, getAzureEmailConfig, getGraphAccessToken, sendE
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Max-Age': '86400',
 };
 
 interface AttachmentInput {
@@ -137,8 +139,17 @@ Deno.serve(async (req) => {
     // x-impersonate-user header to act on behalf of the original campaign owner.
     let user: { id: string; email?: string | null } | null = null;
     const impersonateUserId = req.headers.get("x-impersonate-user");
-    if (token === serviceRoleKey && impersonateUserId) {
-      const { data: u, error: uErr } = await supabaseClient.auth.admin.getUserById(impersonateUserId);
+    const tokenMatchesServiceKey = (() => {
+      const a = new TextEncoder().encode(token);
+      const b = new TextEncoder().encode(serviceRoleKey);
+      if (a.byteLength !== b.byteLength) return false;
+      let diff = 0;
+      for (let i = 0; i < a.byteLength; i++) diff |= a[i] ^ b[i];
+      return diff === 0;
+    })();
+    const isServiceImpersonation = tokenMatchesServiceKey && !!impersonateUserId;
+    if (isServiceImpersonation) {
+      const { data: u, error: uErr } = await supabaseClient.auth.admin.getUserById(impersonateUserId!);
       if (uErr || !u?.user) {
         return new Response(JSON.stringify({ error: "Invalid impersonation user" }), {
           status: 401,
@@ -163,6 +174,32 @@ Deno.serve(async (req) => {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    // IDOR fix: a real user (not the internal send-job-runner impersonation
+    // path) may only send for a campaign they manage. All queries below use the
+    // service-role client, so RLS does not protect this — we must re-check the
+    // manage permission explicitly, mirroring enqueue-campaign-send.
+    if (!isServiceImpersonation) {
+      const anonKey = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("MY_SUPABASE_ANON_KEY");
+      if (!anonKey) {
+        return new Response(JSON.stringify({ error: "Server misconfigured" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const userClient = createClient(supabaseUrl, anonKey, {
+        global: { headers: { Authorization: authHeader } },
+      });
+      const { data: canManage, error: manageErr } = await userClient.rpc("can_manage_campaign", {
+        _campaign_id: payload.campaign_id,
+      });
+      if (manageErr || canManage !== true) {
+        return new Response(JSON.stringify({ error: "You do not have permission to send for this campaign." }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
     }
 
     const { data: campaignContact } = await supabaseClient
@@ -365,13 +402,22 @@ Deno.serve(async (req) => {
       const { data: freqResult } = await supabaseClient.rpc("check_contact_frequency_cap", {
         _contact_id: payload.contact_id,
       });
-      const allowed = (freqResult as any)?.allowed;
-      if (freqResult && allowed === false) {
+      const fr = freqResult as any;
+      const allowed = fr?.allowed;
+      if (fr && allowed === false) {
+        const used1h = fr.used_1h ?? fr.recent_count_1h;
+        const limit1h = fr.limit_1h;
+        const used24h = fr.used_24h ?? fr.recent_count_24h ?? fr.recent_count;
+        const limit24h = fr.limit_24h ?? fr.limit;
+        const parts: string[] = [];
+        if (used1h != null && limit1h != null) parts.push(`${used1h}/${limit1h} in the last 1h`);
+        if (used24h != null && limit24h != null) parts.push(`${used24h}/${limit24h} in the last 24h`);
+        const detail = parts.length ? ` (${parts.join(", ")})` : "";
         return new Response(JSON.stringify({
           success: false,
-          error: `Frequency cap reached for this contact (${(freqResult as any)?.recent_count ?? "?"}/${(freqResult as any)?.limit ?? "?"} in the last ${(freqResult as any)?.window_hours ?? "?"}h across all campaigns).`,
+          error: `Frequency cap reached for this contact${detail} across all campaigns. Try again later or remove the contact from other active campaigns.`,
           errorCode: "FREQUENCY_CAP_EXCEEDED",
-          frequencyDetails: freqResult,
+          frequencyDetails: fr,
         }), {
           status: 429,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -449,7 +495,12 @@ Deno.serve(async (req) => {
       }
     }
 
-    console.log(`Sending campaign email from user mailbox: ${senderEmail} (shared mailbox: ${mailboxEmail})`);
+    // Note: `mailboxEmail` (AZURE_SENDER_EMAIL / shared CRM mailbox) is only
+    // used as a Graph API target for system mail (e.g. daily reminders) and
+    // for inbox polling. User-initiated campaign sends MUST go from the
+    // user's own mailbox (`senderEmail`); we never silently impersonate the
+    // shared mailbox here — that would break sender identity and threading.
+    console.log(`Sending campaign email from user mailbox: ${senderEmail}`);
 
     let accessToken: string;
     try {
@@ -541,6 +592,34 @@ Deno.serve(async (req) => {
           fallbackConversationId,
         );
       }
+
+      // === REPLY MODE: enforce subject parity with parent ===
+      // Outlook never mutates a reply subject (only adds "Re:"), and Gmail
+      // uses subject-equivalence to decide whether to thread. Any client-side
+      // subject change would land the reply in a fresh Gmail thread on the
+      // contact's side. Server-side enforcement is the only reliable guard.
+      if (parentForQuote?.subject) {
+        const parentSubject = parentForQuote.subject.trim();
+        const parentRoot = parentSubject.replace(/^\s*(re|fw|fwd)\s*:\s*/i, "").trim();
+        effectiveSubject = /^\s*re\s*:/i.test(parentSubject)
+          ? parentSubject
+          : `Re: ${parentRoot}`;
+      }
+
+      // === REPLY MODE: require resolvable Graph parent for native createReply ===
+      // If we can't resolve the parent's graphMessageId, sendMail with custom
+      // headers is a known-broken fallback for Gmail recipients (it creates a
+      // brand-new thread). Better to fail loudly than silently break threading.
+      if (!replyToGraphMessageId && !replyToInternetMessageId) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: "Cannot send reply: original email's Graph metadata is missing. Try sending as a new email instead.",
+          errorCode: "REPLY_PARENT_UNRESOLVABLE",
+        }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
     }
 
     // Threading headers are now built inside sendEmailViaGraph using
@@ -588,6 +667,11 @@ Deno.serve(async (req) => {
 
     const htmlBody = `${baseHtmlBody}${signatureHtml}${quotedHtml}${trackingPixel}`;
 
+    // For replies, prefer routing createReply through the parent's mailbox.
+    // The parent message exists only in the mailbox that originally sent it,
+    // so calling createReply against any other mailbox returns 403.
+    const parentMailbox = (parentForQuote?.sender_email || "").trim() || undefined;
+
     let result = await sendEmailViaGraph(
       accessToken,
       mailboxEmail,
@@ -600,27 +684,52 @@ Deno.serve(async (req) => {
       replyToInternetMessageId,
       attachments,
       undefined,
-      { previousReferences: parentForQuote?.references || undefined },
+      {
+        previousReferences: parentForQuote?.references || undefined,
+        parentMailbox,
+        conversationTopic: parentForQuote?.subject || undefined,
+      },
     );
 
+    // #6: Real shared-mailbox fallback. If the user's own mailbox denies the
+    // send (Mail.Send / Application Access Policy missing for that mailbox),
+    // retry once via the shared CRM mailbox. We log this transparently so
+    // the UI can show "X sent, Y via shared mailbox" instead of failing.
     let sentAsShared = false;
-    if (!result.success && result.errorCode === "ErrorAccessDenied" && senderEmail.toLowerCase() !== mailboxEmail.toLowerCase()) {
-      console.warn(`User mailbox send denied for ${senderEmail}; retrying via shared mailbox ${mailboxEmail}`);
-      result = await sendEmailViaGraph(
+    let actualSender = senderEmail;
+    if (
+      !result.success &&
+      result.errorCode === "ErrorAccessDenied" &&
+      azureConfig.senderEmail.toLowerCase() !== senderEmail.toLowerCase() &&
+      !replyToInternetMessageId &&
+      !replyToGraphMessageId
+    ) {
+      console.warn(
+        `[send-campaign-email] mailbox ${senderEmail} denied; retrying via shared mailbox ${azureConfig.senderEmail}`,
+      );
+      const fallbackResult = await sendEmailViaGraph(
         accessToken,
-        mailboxEmail,
+        azureConfig.senderEmail,
         resolvedRecipientEmail,
         resolvedRecipientName,
         effectiveSubject,
         htmlBody,
+        azureConfig.senderEmail,
         undefined,
-        replyToGraphMessageId,
-        replyToInternetMessageId,
+        undefined,
         attachments,
         undefined,
-        { previousReferences: parentForQuote?.references || undefined },
+        {
+          previousReferences: parentForQuote?.references || undefined,
+          parentMailbox: azureConfig.senderEmail,
+          conversationTopic: parentForQuote?.subject || undefined,
+        },
       );
-      sentAsShared = result.success;
+      if (fallbackResult.success) {
+        result = fallbackResult;
+        sentAsShared = true;
+        actualSender = azureConfig.senderEmail;
+      }
     }
 
     const deliveryStatus = result.success ? "sent" : "failed";
@@ -628,10 +737,12 @@ Deno.serve(async (req) => {
     const threadId = payload.thread_id || payload.parent_id || null;
     const parentId = payload.parent_id || null;
     const conversationId = result.conversationId || fallbackConversationId;
-    // C8: when the user-mailbox send was denied and we fell back to the shared mailbox,
-    // the recipient actually received the message from `mailboxEmail`, not `senderEmail`.
-    // Surface the true sender so the UI toast / result panel can show "Sent as <shared>".
-    const actualSender = sentAsShared ? mailboxEmail : senderEmail;
+    const userFacingError = !result.success
+      ? (result.errorCode === "ErrorAccessDenied"
+          ? `Microsoft 365 denied send access for ${senderEmail}. Ask your admin to grant the Azure app the "Mail.Send" Application permission (with admin consent) AND an Application Access Policy that includes this mailbox.`
+          : result.error)
+      : undefined;
+
 
     const { data: commRecord, error: commError } = await supabaseClient
       .from("campaign_communications")
@@ -659,11 +770,11 @@ Deno.serve(async (req) => {
         send_request_id: sendRequestId,
         sent_as_shared: sentAsShared,
         error_code: result.errorCode || null,
-        error_message: result.error ? result.error.substring(0, 1000) : null,
+        error_message: userFacingError ? userFacingError.substring(0, 1000) : null,
         last_attempt_at: new Date().toISOString(),
         owner: user.id,
         created_by: user.id,
-        notes: result.error ? `Send error: ${result.error.substring(0, 500)}` : null,
+        notes: userFacingError ? `Send error: ${userFacingError.substring(0, 500)}` : null,
         communication_date: new Date().toISOString(),
       })
       .select("id")
@@ -693,7 +804,7 @@ Deno.serve(async (req) => {
         campaign_id: payload.campaign_id || null,
         contact_id: payload.contact_id || null,
         sender_user_id: user.id,
-        mailbox_email: mailboxEmail.toLowerCase(),
+        mailbox_email: actualSender.toLowerCase(),
         send_request_id: sendRequestId,
         correlation_id: sendRequestId,
       });
@@ -711,11 +822,11 @@ Deno.serve(async (req) => {
         conversation_id: conversationId,
         sent_as: actualSender,
         sent_as_shared: sentAsShared,
-        error: result.error || undefined,
+        error: userFacingError || undefined,
         errorCode: result.errorCode || undefined,
       }),
       {
-        status: result.success ? 200 : 500,
+        status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       }
     );

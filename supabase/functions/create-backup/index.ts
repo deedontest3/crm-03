@@ -1,4 +1,4 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { adminGate } from '../_shared/safety-backup.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -57,36 +57,15 @@ Deno.serve(async (req) => {
   try {
     const supabaseUrl = Deno.env.get('MY_SUPABASE_URL') || Deno.env.get('SUPABASE_URL')!
     const serviceRoleKey = Deno.env.get('MY_SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!
 
-    const authHeader = req.headers.get('Authorization')
-    if (!authHeader) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    const gate = await adminGate(req, supabaseUrl, anonKey, serviceRoleKey)
+    if ('error' in gate) {
+      return new Response(JSON.stringify({ error: gate.error }), {
+        status: gate.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       })
     }
-
-    const userClient = createClient(supabaseUrl, Deno.env.get('SUPABASE_ANON_KEY')!, {
-      global: { headers: { Authorization: authHeader } }
-    })
-    const { data: { user }, error: authError } = await userClient.auth.getUser()
-    if (authError || !user) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      })
-    }
-
-    const adminClient = createClient(supabaseUrl, serviceRoleKey)
-    const { data: roleData } = await adminClient
-      .from('user_roles')
-      .select('role')
-      .eq('user_id', user.id)
-      .single()
-
-    if (roleData?.role !== 'admin') {
-      return new Response(JSON.stringify({ error: 'Admin access required' }), {
-        status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      })
-    }
+    const { user, adminClient } = gate
 
     const body = await req.json().catch(() => ({}))
     const backupType = body.backupType || 'manual'

@@ -159,14 +159,19 @@ export class CSVParser {
   }
 
   /**
-   * Escape a field value for CSV output
+   * Escape a field value for CSV output. Neutralizes CSV formula-injection
+   * (CWE-1236) before applying delimiter/quote/newline escaping.
    */
   static escapeCSVField(field: string): string {
-    const str = String(field || '');
-    // If field contains comma, quote, or newline, wrap in quotes and escape quotes
+    let str = String(field ?? '');
+    const first = str.charAt(0);
+    if (first === '=' || first === '+' || first === '-' || first === '@' || first === '\t' || first === '\r') {
+      str = `'${str}`;
+    }
     if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
       return `"${str.replace(/"/g, '""')}"`;
     }
     return str;
   }
+
 }

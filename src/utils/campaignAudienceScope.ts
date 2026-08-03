@@ -50,9 +50,15 @@ export function buildCountryVariants(selectedCountries: string[]): string[] {
   const set = new Set<string>();
   for (const c of selectedCountries || []) {
     if (!c) continue;
-    set.add(c);
-    const canon = normalizeCountryName(c);
-    if (canon) set.add(canon);
+    const trimmed = String(c).trim();
+    if (!trimmed) continue;
+    set.add(trimmed);
+    set.add(trimmed.toLowerCase());
+    const canon = normalizeCountryName(trimmed);
+    if (canon) {
+      set.add(canon);
+      set.add(canon.toLowerCase());
+    }
   }
   return Array.from(set);
 }
@@ -64,16 +70,17 @@ export async function fetchScopedAccounts(
   const countryVariants = buildCountryVariants(selectedCountries);
   const regionVariants = expandRegionsForDb(selectedRegions || []);
 
+  // Strict gate: when countries are explicitly selected, scope is exactly
+  // those countries. Returning 0 rows is a valid result — never widen to the
+  // region (that silently included unrelated accounts in earlier versions).
   if (countryVariants.length > 0) {
-    const orExpr = countryVariants.map((c) => `country.ilike.${c.replace(/,/g, "")}`).join(",");
-    const rows = await batched<ScopedAccount>(async (from) =>
+    return batched<ScopedAccount>(async (from) =>
       supabase
         .from("accounts")
         .select("id, account_name, industry, region, country")
-        .or(orExpr)
+        .in("country", countryVariants)
         .range(from, from + BATCH - 1),
     );
-    if (rows.length > 0) return rows;
   }
   if (regionVariants.length > 0) {
     return batched<ScopedAccount>(async (from) =>
@@ -91,6 +98,7 @@ export async function fetchScopedAccounts(
       .range(from, from + BATCH - 1),
   );
 }
+
 
 /**
  * Fetch all contacts whose company_name matches any scoped account name.
@@ -111,15 +119,27 @@ export async function fetchScopedContactsForAccounts(
   const chunkSize = 200;
   for (let i = 0; i < names.length; i += chunkSize) {
     const chunk = names.slice(i, i + chunkSize);
+    // Case-insensitive match: the doc comment promised it, but the original
+    // `.in()` was case-sensitive, silently dropping contacts whose company_name
+    // casing differed from the linked account's. Build an OR of `ilike`
+    // clauses per chunk. `%` and `_` are stripped from names since they'd be
+    // interpreted as wildcards.
+    const orClauses = chunk
+      .map((n) => n.replace(/[%_,()"\\]/g, ''))
+      .filter(Boolean)
+      .map((n) => `company_name.ilike.${n}`)
+      .join(',');
+    if (!orClauses) continue;
     const rows = await batched<ScopedContact>(async (from) =>
       supabase
         .from("contacts")
         .select("id, contact_name, email, position, company_name, phone_no, linkedin")
-        .in("company_name", chunk)
+        .or(orClauses)
         .range(from, from + BATCH - 1),
     );
     all.push(...rows);
   }
+
   // Dedupe by id (contact may match multiple chunks if company name appears twice).
   const seen = new Set<string>();
   return all.filter((c) => (seen.has(c.id) ? false : (seen.add(c.id), true)));

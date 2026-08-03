@@ -5,6 +5,12 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "paths": {
+      "@/integrations/supabase/client": [
+        "./src/integrations/supabase/client-any.ts"
+      ],
+      "@/integrations/supabase/types": [
+        "./src/integrations/supabase/types-shim.ts"
+      ],
       "@/*": [
         "./src/*"
       ]

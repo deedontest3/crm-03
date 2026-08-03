@@ -11,7 +11,6 @@ import {
   BarChart3,
   ArrowRight,
   HeartPulse,
-  Trophy,
   Sparkles,
   Mail,
   Phone,
@@ -20,15 +19,15 @@ import {
   Target,
 } from "lucide-react";
 import { differenceInDays, subDays, startOfDay, format } from "date-fns";
-import { ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, Tooltip as RTooltip } from "recharts";
+import { ResponsiveContainer, AreaChart, Area, BarChart, Bar, XAxis, Tooltip as RTooltip, CartesianGrid } from "recharts";
 import {
   getOutreachCounts,
   getRepliedThreads,
   getFunnel,
 } from "./overviewMetrics";
 import { RecentActivityPanel } from "./overview/RecentActivityPanel";
-import { EngagementHeatmap } from "./overview/EngagementHeatmap";
 import { UpcomingActionItems } from "./overview/UpcomingActionItems";
+import { EmailEngagementWidget } from "./overview/EmailEngagementWidget";
 import { getEnabledChannels, pickDrilldownChannel } from "./channelVisibility";
 
 interface StrategyComplete {
@@ -163,51 +162,17 @@ export function CampaignOverview({
     [communications]
   );
 
-  // Channel sparklines (14d)
-  const buildChannelSpark = (channelMatch: (c: any) => boolean) => {
-    const today = startOfDay(new Date());
-    const days = Array.from({ length: 14 }, (_, i) =>
-      startOfDay(subDays(today, 13 - i))
-    );
-    return days.map((day) => {
-      const next = subDays(day, -1);
-      const v = communications.filter((c: any) => {
-        if (!channelMatch(c)) return false;
-        if (!c.communication_date) return false;
-        const t = new Date(c.communication_date).getTime();
-        return t >= day.getTime() && t < next.getTime();
-      }).length;
-      return { v };
-    });
-  };
 
-  // Health
-  // Use the canonical "won deal value" so Avg € matches the Deals page (excludes Lost).
+  // Won deal value (excludes Lost) — used for Deals KPI sub-stat.
   const winningDeals = deals.filter((d: any) => d.stage !== "Lost");
   const totalDealValue = winningDeals.reduce(
     (sum: number, d: any) => sum + (Number(d.total_contract_value) || 0),
     0
   );
-  // Coverage uses the canonical unique-touched-contact count (matches funnel).
-  const coveragePct =
-    contacts.length > 0
-      ? Math.round((outreach.uniqueTouchedContacts / contacts.length) * 100)
-      : 0;
-  // Touches per CONTACTED contact (not per total contacts) — far more meaningful.
-  const avgTouches =
-    contactedContactIds.size > 0
-      ? (outreach.total / contactedContactIds.size).toFixed(1)
-      : "0.0";
 
   const today = new Date();
-  const startDate = campaign.start_date ? new Date(campaign.start_date) : null;
   const endDate = campaign.end_date ? new Date(campaign.end_date) : null;
-  const totalDays =
-    startDate && endDate ? Math.max(1, differenceInDays(endDate, startDate)) : 0;
-  const elapsedDays = startDate ? Math.max(0, differenceInDays(today, startDate)) : 0;
   const daysRemaining = endDate ? Math.max(0, differenceInDays(endDate, today)) : 0;
-  const timeProgressPct =
-    totalDays > 0 ? Math.min(100, Math.round((elapsedDays / totalDays) * 100)) : 0;
 
   // Reply rate aligned with Analytics tab: replied threads / outbound threads.
   const responseRate =
@@ -226,28 +191,6 @@ export function CampaignOverview({
       : 0;
   const avgDealValue =
     winningDeals.length > 0 ? totalDealValue / winningDeals.length : 0;
-
-  // Top engaged accounts
-  const topAccounts = useMemo(() => {
-    const map = new Map<
-      string,
-      { id: string; name: string; touches: number; replies: number }
-    >();
-    accounts.forEach((a: any) =>
-      map.set(a.id, { id: a.id, name: a.account_name, touches: 0, replies: 0 })
-    );
-    communications.forEach((c: any) => {
-      if (!c.account_id) return;
-      const e = map.get(c.account_id);
-      if (!e) return;
-      if (c.sent_via === "graph-sync" || c.email_status === "Replied") e.replies++;
-      else e.touches++;
-    });
-    return Array.from(map.values())
-      .filter((a) => a.touches > 0 || a.replies > 0)
-      .sort((a, b) => b.replies - a.replies || b.touches - a.touches)
-      .slice(0, 5);
-  }, [accounts, communications]);
 
   // Outreach timeline (last 14 days, daily)
   const timelineData = useMemo(() => {
@@ -359,6 +302,17 @@ export function CampaignOverview({
     return list.slice(0, 3);
   }, [contacts.length, contactedContactIds.size, repliedContactIds.size, deals.length, outreach.threads, endDate, daysRemaining]);
 
+  // Compute % delta of last 3 days vs prior 3 days from spark buckets.
+  const computeDelta = (spark: { v: number }[]) => {
+    if (!spark || spark.length < 6) return null;
+    const recent = spark.slice(-3).reduce((s, p) => s + p.v, 0);
+    const prior = spark.slice(-6, -3).reduce((s, p) => s + p.v, 0);
+    if (recent === 0 && prior === 0) return null;
+    if (prior === 0) return { pct: 100, up: true };
+    const pct = Math.round(((recent - prior) / prior) * 100);
+    return { pct: Math.abs(pct), up: pct >= 0 };
+  };
+
   // KPIs
   const kpis = [
     {
@@ -370,6 +324,7 @@ export function CampaignOverview({
       borderClass: "border-l-slate-400",
       iconBg: "bg-slate-100 dark:bg-slate-800",
       iconColor: "text-slate-600 dark:text-slate-300",
+      tintClass: "bg-gradient-to-br from-slate-100/70 via-transparent to-transparent dark:from-slate-800/40",
     },
     {
       label: "Contacts",
@@ -380,6 +335,7 @@ export function CampaignOverview({
       borderClass: "border-l-blue-500",
       iconBg: "bg-blue-100 dark:bg-blue-900/40",
       iconColor: "text-blue-600 dark:text-blue-300",
+      tintClass: "bg-gradient-to-br from-blue-100/70 via-transparent to-transparent dark:from-blue-950/40",
     },
     {
       label: "Outreach",
@@ -412,8 +368,10 @@ export function CampaignOverview({
       borderClass: "border-l-indigo-500",
       iconBg: "bg-indigo-100 dark:bg-indigo-900/40",
       iconColor: "text-indigo-600 dark:text-indigo-300",
+      tintClass: "bg-gradient-to-br from-indigo-100/70 via-transparent to-transparent dark:from-indigo-950/40",
       spark: outreachSpark,
       sparkColor: "hsl(var(--channel-email))",
+      delta: computeDelta(outreachSpark),
     },
     {
       label: "Responses",
@@ -430,91 +388,50 @@ export function CampaignOverview({
       borderClass: "border-l-amber-500",
       iconBg: "bg-amber-100 dark:bg-amber-900/40",
       iconColor: "text-amber-600 dark:text-amber-300",
+      tintClass: "bg-gradient-to-br from-amber-100/70 via-transparent to-transparent dark:from-amber-950/40",
       spark: responseSpark,
       sparkColor: "hsl(var(--channel-call))",
+      delta: computeDelta(responseSpark),
     },
-    {
-      label: "Deals",
-      value: deals.length,
-      icon: BarChart3,
-      subNode: (
-        <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0 text-[10px] text-muted-foreground tabular-nums">
-          {avgDealValue > 0 && <span>€{(avgDealValue / 1000).toFixed(0)}k avg</span>}
-          {leadToDealPct > 0 && (
-            <>
-              {avgDealValue > 0 && <span className="opacity-50">·</span>}
-              <span>{leadToDealPct}% L→D</span>
-            </>
-          )}
-          {avgDealValue === 0 && leadToDealPct === 0 && <span>—</span>}
-        </span>
-      ),
-      onClick: () => navigate(`/deals?campaign=${campaign.id}`),
-      borderClass: "border-l-emerald-500",
-      iconBg: "bg-emerald-100 dark:bg-emerald-900/40",
-      iconColor: "text-emerald-600 dark:text-emerald-300",
-    },
+    ...(deals.length > 0
+      ? [{
+          label: "Deals",
+          value: deals.length,
+          icon: BarChart3,
+          subNode: (
+            <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0 text-[10px] text-muted-foreground tabular-nums">
+              {avgDealValue > 0 && <span>€{(avgDealValue / 1000).toFixed(0)}k avg</span>}
+              {leadToDealPct > 0 && (
+                <>
+                  {avgDealValue > 0 && <span className="opacity-50">·</span>}
+                  <span>{leadToDealPct}% L→D</span>
+                </>
+              )}
+              {avgDealValue === 0 && leadToDealPct === 0 && <span>—</span>}
+            </span>
+          ),
+          onClick: () => navigate(`/deals?campaign=${campaign.id}`),
+          borderClass: "border-l-emerald-500",
+          iconBg: "bg-emerald-100 dark:bg-emerald-900/40",
+          iconColor: "text-emerald-600 dark:text-emerald-300",
+          tintClass: "bg-gradient-to-br from-emerald-100/70 via-transparent to-transparent dark:from-emerald-950/40",
+        }]
+      : []),
   ];
 
-  // Channel performance rows — only enabled channels.
-  const channelRows = [
-    showEmailCh && {
-      key: "Email" as const,
-      icon: Mail,
-      sent: outreach.emailThreads,
-      replied: repliedThreads.length,
-      spark: buildChannelSpark((c) => c.communication_type === "Email" && c.sent_via !== "graph-sync"),
-      onClick: () =>
-        drill({ tab: "monitoring", view: "outreach", channel: "email", status: "all" }),
-    },
-    showPhoneCh && {
-      key: "Call" as const,
-      icon: Phone,
-      sent: outreach.calls,
-      replied: communications.filter(
-        (c: any) =>
-          (c.communication_type === "Call" || c.communication_type === "Phone") &&
-          c.call_outcome === "Interested"
-      ).length,
-      spark: buildChannelSpark(
-        (c) => c.communication_type === "Call" || c.communication_type === "Phone"
-      ),
-      onClick: () =>
-        drill({ tab: "monitoring", view: "outreach", channel: "call", status: "all" }),
-    },
-    showLinkedInCh && {
-      key: "LinkedIn" as const,
-      icon: Linkedin,
-      sent: outreach.linkedin,
-      replied: communications.filter(
-        (c: any) =>
-          c.communication_type === "LinkedIn" && c.linkedin_status === "Responded"
-      ).length,
-      spark: buildChannelSpark((c) => c.communication_type === "LinkedIn"),
-      onClick: () =>
-        drill({ tab: "monitoring", view: "outreach", channel: "linkedin", status: "all" }),
-    },
-  ].filter(Boolean) as Array<{
-    key: "Email" | "Call" | "LinkedIn";
-    icon: any;
-    sent: number;
-    replied: number;
-    spark: { v: number }[];
-    onClick: () => void;
-  }>;
-
-  
 
   return (
-    <div className="flex flex-col gap-3 w-full pb-4">
+    <div className="flex flex-col gap-2 w-full pb-2">
       {/* Row 1: KPI strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+      <div className={`grid grid-cols-2 sm:grid-cols-3 ${kpis.length >= 5 ? "lg:grid-cols-5" : "lg:grid-cols-4"} gap-2`}>
         {kpis.map((k) => {
           const Icon = k.icon;
+          const delta = (k as any).delta as { pct: number; up: boolean } | null | undefined;
+          const sparkId = `spark-${k.label.toLowerCase()}`;
           return (
             <Card
               key={k.label}
-              className={`border-l-[3px] ${k.borderClass} cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all`}
+              className={`relative overflow-hidden border-l-[3px] ${k.borderClass} cursor-pointer hover:shadow-lg hover:-translate-y-0.5 transition-all`}
               onClick={k.onClick}
               role="button"
               tabIndex={0}
@@ -525,12 +442,27 @@ export function CampaignOverview({
                 }
               }}
             >
-              <CardContent className="p-2.5">
+              <div className={`pointer-events-none absolute inset-0 ${(k as any).tintClass || ""}`} />
+              <CardContent className="relative p-2.5">
                 <div className="flex items-center justify-between gap-2">
                   <div className="min-w-0 flex-1">
-                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
-                      {k.label}
-                    </p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
+                        {k.label}
+                      </p>
+                      {delta && (
+                        <span
+                          className={`inline-flex items-center gap-0.5 px-1 py-[1px] rounded-sm text-[9px] font-semibold tabular-nums ${
+                            delta.up
+                              ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                              : "bg-rose-500/15 text-rose-700 dark:text-rose-300"
+                          }`}
+                          title="Last 3 days vs prior 3 days"
+                        >
+                          {delta.up ? "▲" : "▼"} {delta.pct}%
+                        </span>
+                      )}
+                    </div>
                     <p className="text-xl font-bold leading-tight tabular-nums">
                       {k.value}
                     </p>
@@ -544,23 +476,29 @@ export function CampaignOverview({
                   </div>
                   <div className="flex flex-col items-end gap-1">
                     <div
-                      className={`h-7 w-7 rounded-md ${k.iconBg} flex items-center justify-center shrink-0`}
+                      className={`h-8 w-8 rounded-lg ${k.iconBg} flex items-center justify-center shrink-0 shadow-sm ring-1 ring-border/40`}
                     >
-                      <Icon className={`h-3.5 w-3.5 ${k.iconColor}`} />
+                      <Icon className={`h-4 w-4 ${k.iconColor}`} />
                     </div>
                     {k.spark && k.spark.some((p) => p.v > 0) && (
-                      <div className="h-4 w-12">
+                      <div className="h-5 w-14">
                         <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={k.spark}>
-                            <Line
+                          <AreaChart data={k.spark} margin={{ top: 1, right: 0, left: 0, bottom: 0 }}>
+                            <defs>
+                              <linearGradient id={sparkId} x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor={k.sparkColor} stopOpacity={0.55} />
+                                <stop offset="100%" stopColor={k.sparkColor} stopOpacity={0.05} />
+                              </linearGradient>
+                            </defs>
+                            <Area
                               type="monotone"
                               dataKey="v"
                               stroke={k.sparkColor}
                               strokeWidth={1.5}
-                              dot={false}
+                              fill={`url(#${sparkId})`}
                               isAnimationActive={false}
                             />
-                          </LineChart>
+                          </AreaChart>
                         </ResponsiveContainer>
                       </div>
                     )}
@@ -572,10 +510,10 @@ export function CampaignOverview({
         })}
       </div>
 
-      {/* Row 2: 3-column main grid — Recent Activity | Next Action + Channels | Health + Top Engaged */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-stretch">
+      {/* Row 2: Recent Activity | Next Action | Email Engagement (top-right) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-2 items-stretch">
         {/* Recent Activity (left) */}
-        <div className="lg:col-span-4 flex">
+        <div className="lg:col-span-5 flex">
           <RecentActivityPanel
             communications={communications}
             enabledChannels={enabledChannels}
@@ -611,26 +549,45 @@ export function CampaignOverview({
           />
         </div>
 
-        {/* Middle column: Next Action (top) + Channel Performance (bottom) */}
-        <div className="lg:col-span-4 flex flex-col gap-3">
-          <Card className="flex-1">
+        {/* Next Action (middle) */}
+        <div className="lg:col-span-3 flex">
+          <Card className="relative flex-1 overflow-hidden">
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-primary via-violet-500 to-fuchsia-500" />
             <CardContent className="p-3">
               <div className="flex items-center gap-2 mb-2">
-                <Target className="h-3.5 w-3.5 text-primary" />
+                <div className="h-5 w-5 rounded-md bg-primary/15 flex items-center justify-center">
+                  <Target className="h-3 w-3 text-primary" />
+                </div>
                 <h3 className="text-xs font-semibold uppercase tracking-wider">
                   Next Action
                 </h3>
+                <span className="ml-auto text-[10px] text-muted-foreground tabular-nums">
+                  {nextActions.length}
+                </span>
               </div>
               <ul className="flex flex-col gap-1.5">
                 {nextActions.map((a) => {
                   const Icon = a.icon;
+                  const tone =
+                    a.id === "reach"
+                      ? { bar: "bg-blue-500", chip: "bg-blue-100 text-blue-600 dark:bg-blue-950/50 dark:text-blue-300", hover: "hover:bg-blue-50/60 dark:hover:bg-blue-950/30" }
+                      : a.id === "convert"
+                      ? { bar: "bg-emerald-500", chip: "bg-emerald-100 text-emerald-600 dark:bg-emerald-950/50 dark:text-emerald-300", hover: "hover:bg-emerald-50/60 dark:hover:bg-emerald-950/30" }
+                      : a.id === "follow"
+                      ? { bar: "bg-amber-500", chip: "bg-amber-100 text-amber-600 dark:bg-amber-950/50 dark:text-amber-300", hover: "hover:bg-amber-50/60 dark:hover:bg-amber-950/30" }
+                      : a.id === "ending"
+                      ? { bar: "bg-violet-500", chip: "bg-violet-100 text-violet-600 dark:bg-violet-950/50 dark:text-violet-300", hover: "hover:bg-violet-50/60 dark:hover:bg-violet-950/30" }
+                      : { bar: "bg-slate-400", chip: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300", hover: "hover:bg-muted/50" };
                   return (
                     <li key={a.id}>
                       <button
                         onClick={a.onClick}
-                        className="w-full flex items-start gap-2 p-1.5 rounded-md hover:bg-primary/5 text-left group"
+                        className={`relative w-full flex items-start gap-2 p-1.5 pl-2.5 rounded-md text-left group overflow-hidden ${tone.hover}`}
                       >
-                        <Icon className="h-3 w-3 text-primary mt-0.5 shrink-0" />
+                        <span className={`absolute left-0 top-1 bottom-1 w-1 rounded-r ${tone.bar}`} />
+                        <div className={`h-5 w-5 rounded-full flex items-center justify-center shrink-0 ${tone.chip}`}>
+                          <Icon className="h-2.5 w-2.5" />
+                        </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-[11px] font-medium leading-tight truncate">
                             {a.label}
@@ -646,192 +603,57 @@ export function CampaignOverview({
               </ul>
             </CardContent>
           </Card>
-
-          <Card className="flex-1">
-            <CardContent className="p-3">
-              <div className="flex items-center gap-2 mb-2">
-                <Activity className="h-3.5 w-3.5 text-muted-foreground" />
-                <h3 className="text-xs font-semibold uppercase tracking-wider">
-                  Channel Performance
-                </h3>
-              </div>
-              <div className="flex flex-col gap-1">
-                {(() => {
-                  const active = channelRows.filter((c) => c.sent > 0);
-                  const inactive = channelRows.filter((c) => c.sent === 0);
-                  const rows = active.length > 0 ? active : channelRows;
-                  return (
-                    <>
-                      {rows.map((ch) => {
-                        const Icon = ch.icon;
-                        const rate =
-                          ch.sent > 0 ? Math.round((ch.replied / ch.sent) * 100) : 0;
-                        const replyLabel = ch.key === "Email" ? "Reply" : "Positive";
-                        return (
-                          <button
-                            key={ch.key}
-                            onClick={ch.onClick}
-                            className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-2 text-[11px] hover:bg-muted/40 rounded px-1 py-1"
-                            title={`${replyLabel}: ${ch.replied} of ${ch.sent}`}
-                          >
-                            <Icon className="h-3.5 w-3.5 text-primary shrink-0" />
-                            <span className="text-left font-medium truncate">
-                              {ch.key}
-                            </span>
-                            <span className="text-right tabular-nums text-muted-foreground">
-                              {ch.replied}/{ch.sent}
-                            </span>
-                            <span className="w-10 text-right tabular-nums font-semibold">
-                              {ch.sent > 0 ? `${rate}%` : "—"}
-                            </span>
-                          </button>
-                        );
-                      })}
-                      {active.length > 0 && inactive.length > 0 && (
-                        <p className="text-[10px] text-muted-foreground/70 px-1 pt-0.5">
-                          Inactive: {inactive.map((c) => c.key).join(", ")}
-                        </p>
-                      )}
-                    </>
-                  );
-                })()}
-              </div>
-            </CardContent>
-          </Card>
         </div>
 
-        {/* Right column: Health (top) + Top Engaged (bottom) */}
-        <div className="lg:col-span-4 flex flex-col gap-3">
-          <Card className="flex-1">
-            <CardContent className="p-3">
-              <div className="flex items-center gap-2 mb-2">
-                <HeartPulse className="h-3.5 w-3.5 text-muted-foreground" />
-                <h3 className="text-xs font-semibold uppercase tracking-wider">
-                  Health
-                </h3>
-              </div>
-              <div className="flex flex-col gap-2">
-                <button
-                  onClick={() => drill({ tab: "setup", section: "timing" })}
-                  className="text-left hover:opacity-80"
-                  title={
-                    startDate && endDate
-                      ? `${format(startDate, "d MMM")} → ${format(endDate, "d MMM yyyy")}`
-                      : "Set start & end dates"
-                  }
-                >
-                  <div className="flex items-center justify-between text-[10px] mb-0.5">
-                    <span className="text-muted-foreground">Time</span>
-                    <span className="tabular-nums font-medium">
-                      {endDate ? `${elapsedDays}/${totalDays}d` : "—"}
-                    </span>
-                  </div>
-                  <div className="h-1 rounded-full bg-muted overflow-hidden">
-                    <div
-                      className="h-full bg-blue-500 rounded-full"
-                      style={{ width: `${timeProgressPct}%` }}
-                    />
-                  </div>
-                </button>
-                <button
-                  onClick={() =>
-                    drill({
-                      tab: "setup",
-                      section: "audience",
-                      audienceView: "contacts",
-                    })
-                  }
-                  className="text-left hover:opacity-80"
-                  title={`${outreach.uniqueTouchedContacts} of ${contacts.length} contacts touched`}
-                >
-                  <div className="flex items-center justify-between text-[10px] mb-0.5">
-                    <span className="text-muted-foreground">Coverage</span>
-                    <span className="tabular-nums font-medium">{coveragePct}%</span>
-                  </div>
-                  <div className="h-1 rounded-full bg-muted overflow-hidden">
-                    <div
-                      className="h-full bg-emerald-500 rounded-full"
-                      style={{ width: `${coveragePct}%` }}
-                    />
-                  </div>
-                </button>
-                <button
-                  onClick={() =>
-                    drill({ tab: "monitoring", view: "outreach", channel: "email", status: "all" })
-                  }
-                  className="flex items-center justify-between text-[10px] pt-0.5 hover:opacity-80"
-                  title="Average outreach touches per contacted contact"
-                >
-                  <span className="text-muted-foreground">Touches / contact</span>
-                  <span className="tabular-nums font-medium">{avgTouches}</span>
-                </button>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="flex-1">
-            <CardContent className="p-3">
-              <div className="flex items-center gap-2 mb-2">
-                <Trophy className="h-3.5 w-3.5 text-amber-500" />
-                <h3 className="text-xs font-semibold uppercase tracking-wider">
-                  Top Engaged
-                </h3>
-              </div>
-              {topAccounts.length === 0 ? (
-                <p className="text-[11px] text-muted-foreground py-2 text-center">
-                  No engagement
-                </p>
-              ) : (
-                <ul className="flex flex-col gap-1">
-                  {topAccounts.map((a) => {
-                    const total = a.touches + a.replies;
-                    const rate =
-                      total > 0 ? Math.round((a.replies / total) * 100) : 0;
-                    return (
-                      <li key={a.id}>
-                        <button
-                          onClick={() => navigate(`/accounts?accountId=${a.id}`)}
-                          className="w-full flex items-center justify-between gap-2 text-[11px] hover:bg-muted/40 rounded px-1 py-0.5"
-                          title={`${a.name} — ${a.replies} replies / ${a.touches} touches (${rate}%)`}
-                        >
-                          <span className="truncate text-left flex-1">{a.name}</span>
-                          <span className="tabular-nums shrink-0 flex items-center gap-1">
-                            <span className="text-amber-600 dark:text-amber-400 font-semibold">
-                              {a.replies}
-                            </span>
-                            <span className="text-muted-foreground/60">
-                              /{a.touches}
-                            </span>
-                            <span className="text-[10px] text-muted-foreground w-7 text-right">
-                              {rate}%
-                            </span>
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
+        {/* Upcoming Action Items (top-right — fills empty space beside Next Action) */}
+        <div className="lg:col-span-4 flex">
+          <div className="flex-1">
+            <UpcomingActionItems
+              campaignId={campaign.id}
+              onOpenActionItems={() => onTabChange("actionItems")}
+            />
+          </div>
         </div>
       </div>
 
-      {/* Row 3: Outreach Timeline + Upcoming Action Items */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-stretch">
+      {/* Row 3: Outreach Timeline | Upcoming Action Items */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-2 items-stretch">
         <div className="lg:col-span-8 flex">
           <Card className="flex-1">
-            <CardContent className="p-3 h-full flex flex-col">
-              <div className="flex items-center gap-2 mb-2">
-                <Activity className="h-3.5 w-3.5 text-muted-foreground" />
+            <CardContent className="p-3">
+              <div className="flex items-center gap-2 mb-1">
+                <div className="h-5 w-5 rounded-md bg-primary/10 flex items-center justify-center">
+                  <Activity className="h-3 w-3 text-primary" />
+                </div>
                 <h3 className="text-xs font-semibold uppercase tracking-wider">
                   Outreach Timeline
                 </h3>
-                <span className="ml-auto text-[10px] text-muted-foreground">
-                  Last 14 days
-                </span>
+                <div className="ml-auto flex items-center gap-2 text-[10px] tabular-nums">
+                  {showEmailCh && (
+                    <span className="inline-flex items-center gap-1">
+                      <span className="h-2 w-2 rounded-sm" style={{ background: "hsl(var(--channel-email))" }} />
+                      <span className="text-muted-foreground">Email</span>
+                      <span className="font-semibold">{timelineData.reduce((s, d) => s + d.Email, 0)}</span>
+                    </span>
+                  )}
+                  {showPhoneCh && (
+                    <span className="inline-flex items-center gap-1">
+                      <span className="h-2 w-2 rounded-sm" style={{ background: "hsl(var(--channel-call))" }} />
+                      <span className="text-muted-foreground">Calls</span>
+                      <span className="font-semibold">{timelineData.reduce((s, d) => s + d.Call, 0)}</span>
+                    </span>
+                  )}
+                  {showLinkedInCh && (
+                    <span className="inline-flex items-center gap-1">
+                      <span className="h-2 w-2 rounded-sm" style={{ background: "hsl(var(--channel-linkedin))" }} />
+                      <span className="text-muted-foreground">LinkedIn</span>
+                      <span className="font-semibold">{timelineData.reduce((s, d) => s + d.LinkedIn, 0)}</span>
+                    </span>
+                  )}
+                  <span className="text-muted-foreground">· Last 14d</span>
+                </div>
               </div>
-              <div className="h-32 flex-1">
+              <div className="h-28">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart
                     data={timelineData}
@@ -846,6 +668,21 @@ export function CampaignOverview({
                       });
                     }}
                   >
+                    <defs>
+                      <linearGradient id="bar-email" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="hsl(var(--channel-email))" stopOpacity={1} />
+                        <stop offset="100%" stopColor="hsl(var(--channel-email))" stopOpacity={0.55} />
+                      </linearGradient>
+                      <linearGradient id="bar-call" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="hsl(var(--channel-call))" stopOpacity={1} />
+                        <stop offset="100%" stopColor="hsl(var(--channel-call))" stopOpacity={0.55} />
+                      </linearGradient>
+                      <linearGradient id="bar-linkedin" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="hsl(var(--channel-linkedin))" stopOpacity={1} />
+                        <stop offset="100%" stopColor="hsl(var(--channel-linkedin))" stopOpacity={0.55} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid vertical={false} strokeDasharray="2 4" stroke="hsl(var(--border))" opacity={0.5} />
                     <XAxis
                       dataKey="date"
                       tick={{ fontSize: 9 }}
@@ -854,6 +691,7 @@ export function CampaignOverview({
                       interval={1}
                     />
                     <RTooltip
+                      cursor={{ fill: "hsl(var(--muted))", opacity: 0.4 }}
                       contentStyle={{
                         fontSize: 11,
                         borderRadius: 6,
@@ -861,42 +699,33 @@ export function CampaignOverview({
                         background: "hsl(var(--background))",
                       }}
                     />
-                    {showEmailCh && <Bar dataKey="Email" stackId="a" fill="hsl(var(--channel-email))" />}
-                    {showPhoneCh && <Bar dataKey="Call" stackId="a" fill="hsl(var(--channel-call))" />}
-                    {showLinkedInCh && <Bar dataKey="LinkedIn" stackId="a" fill="hsl(var(--channel-linkedin))" />}
+                    {showEmailCh && <Bar dataKey="Email" stackId="a" fill="url(#bar-email)" radius={[3, 3, 0, 0]} />}
+                    {showPhoneCh && <Bar dataKey="Call" stackId="a" fill="url(#bar-call)" radius={[3, 3, 0, 0]} />}
+                    {showLinkedInCh && <Bar dataKey="LinkedIn" stackId="a" fill="url(#bar-linkedin)" radius={[3, 3, 0, 0]} />}
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             </CardContent>
           </Card>
         </div>
+
+        {/* Email Engagement (right) */}
         <div className="lg:col-span-4 flex">
-          <UpcomingActionItems
-            campaignId={campaign.id}
-            onOpenActionItems={() => onTabChange("actionItems")}
-          />
+          <div className="flex-1">
+            <EmailEngagementWidget
+              communications={communications}
+              onDrilldown={(status) =>
+                drill({
+                  tab: "monitoring",
+                  view: "outreach",
+                  channel: "email",
+                  status: status as any,
+                })
+              }
+            />
+          </div>
         </div>
       </div>
-
-      {/* Row 4: collapsible Reply Heatmap (hidden by default to save space) */}
-      <details className="group rounded-lg border bg-card">
-        <summary className="cursor-pointer list-none flex items-center gap-2 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground select-none">
-          <Activity className="h-3.5 w-3.5" />
-          Send-time analysis
-          <span className="ml-auto text-[10px] font-normal normal-case">
-            Click to expand
-          </span>
-        </summary>
-        <div className="p-3 pt-0">
-          <EngagementHeatmap
-            communications={communications}
-            enabledChannels={enabledChannels}
-            onCellClick={() =>
-              drill({ tab: "monitoring", view: "outreach", channel: defaultDrilldownChannel, status: "all" })
-            }
-          />
-        </div>
-      </details>
     </div>
   );
 }

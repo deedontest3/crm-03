@@ -1,6 +1,20 @@
-import { Fragment, useState, useMemo, useEffect, useCallback, useRef } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { DragDropContext, Droppable, Draggable, DropResult } from "@hello-pangea/dnd";
-import { Deal, DealStage, DEAL_STAGES, STAGE_COLORS } from "@/types/deal";
+import { Deal, DealStage, DEAL_STAGES, STAGE_PROBABILITY, TERMINAL_STAGES, isForwardPipelineMove, isBackwardPipelineMove, isAdjacentPipelineMove, isTransitionAllowed, getNextPipelineStage, buildBackwardMoveUpdates, type BackwardStageMoveRequest, BU_OPTIONS, type BUOption, getStageLabel } from "@/types/deal";
+import { useUserRole } from "@/hooks/useUserRole";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { MoreHorizontal, Archive as ArchiveIcon, CheckSquare, Download } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { CalendarDays } from "lucide-react";
+import { BackwardStageConfirmDialog } from "./deal-form/BackwardStageConfirmDialog";
 import { DealCard } from "./DealCard";
 import { InlineDetailsPanel } from "./kanban/InlineDetailsPanel";
 import { KanbanActionItemModal } from "./kanban/KanbanActionItemModal";
@@ -8,12 +22,63 @@ import type { ActionItem } from "@/hooks/useActionItems";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { Plus, Search, X } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { showToastOnce } from "@/lib/toastOnce";
 import { BulkActionsBar } from "./BulkActionsBar";
 import { DealsAdvancedFilter, AdvancedFilterState } from "./DealsAdvancedFilter";
 import { AnimatedStageHeaders } from "./kanban/AnimatedStageHeaders";
+import { getFieldErrors } from "./deal-form/validation";
+import { MissingFieldsDialog } from "./kanban/MissingFieldsDialog";
 import { cn } from "@/lib/utils";
+import { dateToFiscal, fiscalLabel, currentFiscalYear } from "@/lib/fiscalYear";
+
+const getErrorMessage = (error: unknown, fallback: string) => {
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = String((error as { message?: unknown }).message || '').trim();
+    if (message) return message;
+  }
+  return fallback;
+};
+
+const YEAR_STORAGE_KEY = "deals.selectedYear";
+const FILTER_STORAGE_KEY = "deals-kanban-filters";
+
+const isValidYearFilter = (value: unknown): value is string =>
+  value === "all" || (typeof value === "string" && /^\d{4}$/.test(value));
+
+const readStoredSelectedYear = (): string => {
+  if (typeof window === "undefined") return "all";
+  try {
+    const directValue = window.localStorage.getItem(YEAR_STORAGE_KEY);
+    if (isValidYearFilter(directValue)) return directValue;
+
+    const savedFilters = window.localStorage.getItem(FILTER_STORAGE_KEY);
+    if (savedFilters) {
+      const parsed = JSON.parse(savedFilters);
+      if (isValidYearFilter(parsed?.selectedYear)) return parsed.selectedYear;
+    }
+  } catch {
+    // Ignore storage parse/access failures and fall back to all years.
+  }
+  return "all";
+};
+
+const writeStoredSelectedYear = (value: string) => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(YEAR_STORAGE_KEY, value);
+
+    const currentFilters = window.localStorage.getItem(FILTER_STORAGE_KEY);
+    const parsed = currentFilters ? JSON.parse(currentFilters) : {};
+    window.localStorage.setItem(
+      FILTER_STORAGE_KEY,
+      JSON.stringify({ ...parsed, selectedYear: value })
+    );
+  } catch {
+    // Ignore storage write failures.
+  }
+};
 
 interface KanbanBoardProps {
   deals: Deal[];
@@ -24,6 +89,10 @@ interface KanbanBoardProps {
   onImportDeals: (deals: Partial<Deal>[]) => void;
   onRefresh: () => void;
   headerActions?: React.ReactNode;
+  onOpenArchive?: () => void;
+  canArchive?: boolean;
+  onLoadAll?: () => void;
+  hasMore?: boolean;
 }
 
 export const KanbanBoard = ({ 
@@ -34,7 +103,11 @@ export const KanbanBoard = ({
   onDeleteDeals, 
   onImportDeals,
   onRefresh,
-  headerActions 
+  headerActions,
+  onOpenArchive,
+  canArchive,
+  onLoadAll,
+  hasMore,
 }: KanbanBoardProps) => {
   const [draggedDeal, setDraggedDeal] = useState<string | null>(null);
   const [selectedDeals, setSelectedDeals] = useState<Set<string>>(new Set());
@@ -44,16 +117,32 @@ export const KanbanBoard = ({
     dealId: string;
     stageIndex: number;
   } | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialUrlYear = searchParams.get("year");
+  const [selectedYear, setSelectedYearState] = useState<string>(() =>
+    isValidYearFilter(initialUrlYear) ? initialUrlYear : readStoredSelectedYear()
+  );
+  const setSelectedYear = useCallback((value: string) => {
+    setSelectedYearState(value);
+    writeStoredSelectedYear(value);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (value === "all") {
+        next.delete("year");
+      } else {
+        next.set("year", value);
+      }
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
   const [filters, setFilters] = useState<AdvancedFilterState>({
-    stages: [],
     regions: [],
     leadOwners: [],
     priorities: [],
-    handoffStatuses: [],
-    searchTerm: "",
-    probabilityRange: [0, 100],
+    bus: [],
   });
   const { toast } = useToast();
+  const { isAdminOrAbove } = useUserRole();
   
   // Transition state machine for smooth expand/collapse animations
   type TransitionState = 'idle' | 'expanding' | 'expanded' | 'collapsing';
@@ -73,6 +162,20 @@ export const KanbanBoard = ({
    
    // Add Detail modal state (triggered from AnimatedStageHeaders "Add" button)
    const [addDetailOpen, setAddDetailOpen] = useState(false);
+
+  // Prompt to fill required fields when moving between stages.
+  // `mode` controls whether the dialog completes a move (terminal target) or
+  // just fills the current stage's required fields before the forward move.
+  const [pendingTransition, setPendingTransition] = useState<{
+    dealId: string;
+    targetStage: DealStage;
+    missing: string[];
+    mode: 'move-to-target' | 'fill-current';
+    validationStage: DealStage;
+  } | null>(null);
+
+  const [pendingBackwardMove, setPendingBackwardMove] = useState<BackwardStageMoveRequest<Deal> | null>(null);
+
 
   // Handle keyboard escape to close expanded panel
   useEffect(() => {
@@ -171,12 +274,75 @@ export const KanbanBoard = ({
     };
   }, [deals]);
 
+  // Available fiscal years (Apr–Mar) from deals' last-updated (modified_at) dates, newest first.
+  // Seed with the current FY so it's always selectable even before any deal is modified this FY.
+  const availableYears = useMemo(() => {
+    const years = new Set<number>();
+    years.add(currentFiscalYear());
+    deals.forEach((d) => {
+      if (d.modified_at) {
+        const dt = new Date(d.modified_at);
+        if (!isNaN(dt.getTime())) years.add(dateToFiscal(dt).fy);
+      }
+    });
+    return Array.from(years).sort((a, b) => b - a);
+  }, [deals]);
+
   useEffect(() => {
-    const savedFilters = localStorage.getItem('deals-kanban-filters');
+    const urlYear = searchParams.get("year");
+    let yearToRestore = isValidYearFilter(urlYear) ? urlYear : readStoredSelectedYear();
+
+    // One-time migration: prior versions stored a calendar year (e.g. "2026").
+    // If that value doesn't match any current FY option, coerce it to the FY
+    // that the Jan 1 of that calendar year belongs to (Jan–Mar → previous FY).
+    if (
+      yearToRestore !== "all" &&
+      availableYears.length > 0 &&
+      !availableYears.includes(Number(yearToRestore))
+    ) {
+      const coerced = dateToFiscal(new Date(Number(yearToRestore), 0, 1)).fy.toString();
+      yearToRestore = coerced;
+    }
+
+    setSelectedYearState(yearToRestore);
+    writeStoredSelectedYear(yearToRestore);
+
+    const syncSelectedYear = () => {
+      setSelectedYearState(readStoredSelectedYear());
+    };
+
+    window.addEventListener('pageshow', syncSelectedYear);
+    window.addEventListener('focus', syncSelectedYear);
+    window.addEventListener('storage', syncSelectedYear);
+
+    return () => {
+      window.removeEventListener('pageshow', syncSelectedYear);
+      window.removeEventListener('focus', syncSelectedYear);
+      window.removeEventListener('storage', syncSelectedYear);
+    };
+    // availableYears intentionally omitted — migration only needs to run on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const urlYear = searchParams.get("year");
+    if (!isValidYearFilter(urlYear) || urlYear === selectedYear) return;
+
+    setSelectedYearState(urlYear);
+    writeStoredSelectedYear(urlYear);
+  }, [searchParams, selectedYear]);
+
+  useEffect(() => {
+    const savedFilters = localStorage.getItem(FILTER_STORAGE_KEY);
     if (savedFilters) {
       try {
         const parsed = JSON.parse(savedFilters);
-        setFilters(parsed);
+        setFilters({
+          regions: Array.isArray(parsed?.regions) ? parsed.regions : [],
+          leadOwners: Array.isArray(parsed?.leadOwners) ? parsed.leadOwners : [],
+          priorities: Array.isArray(parsed?.priorities) ? parsed.priorities : [],
+          bus: Array.isArray(parsed?.bus) ? parsed.bus : [],
+        });
         setSearchTerm(parsed.searchTerm || "");
       } catch (e) {
         console.error('Failed to parse saved filters:', e);
@@ -185,34 +351,35 @@ export const KanbanBoard = ({
   }, []);
 
   useEffect(() => {
-    const filtersWithSearch = { ...filters, searchTerm };
-    localStorage.setItem('deals-kanban-filters', JSON.stringify(filtersWithSearch));
-  }, [filters, searchTerm]);
+    const filtersWithSearch = { ...filters, searchTerm, selectedYear };
+    localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(filtersWithSearch));
+    writeStoredSelectedYear(selectedYear);
+  }, [filters, searchTerm, selectedYear]);
 
   const filterDeals = (deals: Deal[]) => {
     return deals.filter(deal => {
-      // Combine search from both searchTerm and filters.searchTerm
-      const allSearchTerms = [searchTerm, filters.searchTerm].filter(Boolean).join(' ').toLowerCase();
-      const searchMatch = !allSearchTerms || 
+      const allSearchTerms = (searchTerm || '').toLowerCase();
+      const searchMatch = !allSearchTerms ||
         deal.deal_name?.toLowerCase().includes(allSearchTerms) ||
         deal.project_name?.toLowerCase().includes(allSearchTerms) ||
         deal.lead_name?.toLowerCase().includes(allSearchTerms) ||
         deal.customer_name?.toLowerCase().includes(allSearchTerms) ||
         deal.region?.toLowerCase().includes(allSearchTerms);
-      
+
       // Apply multi-select filters
-      const matchesStages = filters.stages.length === 0 || filters.stages.includes(deal.stage);
       const matchesRegions = filters.regions.length === 0 || filters.regions.includes(deal.region || '');
       const matchesLeadOwners = filters.leadOwners.length === 0 || filters.leadOwners.includes(deal.lead_owner || '');
       const matchesPriorities = filters.priorities.length === 0 || filters.priorities.includes(String(deal.priority || ''));
-      const matchesHandoffStatuses = filters.handoffStatuses.length === 0 || filters.handoffStatuses.includes(deal.handoff_status || '');
-      
-      // Probability range filter
-      const dealProbability = deal.probability || 0;
-      const matchesProbabilityRange = dealProbability >= filters.probabilityRange[0] && dealProbability <= filters.probabilityRange[1];
-      
-      return searchMatch && matchesStages && matchesRegions && matchesLeadOwners && 
-             matchesPriorities && matchesHandoffStatuses && matchesProbabilityRange;
+
+      // BU filter: deal.bu is an array; match if any overlap
+      const matchesBUs = filters.bus.length === 0 || (Array.isArray(deal.bu) && deal.bu.some(b => filters.bus.includes(String(b))));
+
+      // Fiscal year (Apr–Mar) filter based on last updated (modified_at)
+      const matchesYear =
+        selectedYear === "all" ||
+        (deal.modified_at && dateToFiscal(new Date(deal.modified_at)).fy.toString() === selectedYear);
+
+      return searchMatch && matchesRegions && matchesLeadOwners && matchesPriorities && matchesBUs && matchesYear;
     });
   };
 
@@ -251,17 +418,82 @@ export const KanbanBoard = ({
 
     console.log(`Moving deal from ${deal.stage} to ${newStage}`);
 
+    const currentStage = deal.stage as DealStage;
+
+    // Won is closed-won; block moves out of Won (admin may only reopen to Verbal Approval).
+    const gate = isTransitionAllowed(currentStage, newStage, { isAdmin: isAdminOrAbove });
+    if (!gate.allowed) {
+      toast({ title: "Move blocked", description: gate.reason, variant: "destructive" });
+      return;
+    }
+
+    const forward = isForwardPipelineMove(currentStage, newStage);
+
+    // Adjacency guard: pipeline moves must be one stage at a time.
+    if (!isAdjacentPipelineMove(currentStage, newStage)) {
+      const next = getNextPipelineStage(currentStage, newStage);
+      toast({
+        title: "One stage at a time",
+        description: next
+          ? `Move to ${getStageLabel(next)} first before reaching ${getStageLabel(newStage)}.`
+          : `You can only move one pipeline stage at a time.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+
+    // Backward (non-terminal) drag → confirm + ask about field handling.
+    if (isBackwardPipelineMove(currentStage, newStage)) {
+      setPendingBackwardMove({
+        dealId: draggableId,
+        deal,
+        currentStage,
+        targetStage: newStage,
+      });
+      return;
+    }
+
+    // Stage gate: when advancing along the pipeline, validate the CURRENT
+    // stage's required fields (must be completed before exit). When moving
+    // into a terminal stage (Won/Lost/Hold/Dropped), fall back to the target
+    // stage's required fields.
+    const validationStage: DealStage = TERMINAL_STAGES.includes(newStage)
+      ? newStage
+      : forward
+        ? currentStage
+        : newStage;
+    const dataForCheck = forward && !TERMINAL_STAGES.includes(newStage) ? deal : { ...deal, stage: newStage };
+    const fieldErrors = getFieldErrors(dataForCheck, validationStage);
+    const missing = Object.keys(fieldErrors);
+    if (missing.length > 0) {
+      setPendingTransition({
+        dealId: draggableId,
+        targetStage: newStage,
+        missing,
+        mode: forward && !TERMINAL_STAGES.includes(newStage) ? 'fill-current' : 'move-to-target',
+        validationStage,
+      });
+      return;
+    }
+
+
     try {
       console.log(`Moving deal ${draggableId} to stage ${newStage}`);
-      
-      // Create update object with the new stage
+
+      // Hold is a pause state — preserve the deal's existing probability so
+      // the funnel does not silently zero-out the forecast when something is
+      // parked. All other stages follow the stage→probability mapping.
       const updates: Partial<Deal> = {
-        stage: newStage
+        stage: newStage,
+        probability: newStage === 'Hold'
+          ? (deal.probability ?? STAGE_PROBABILITY[newStage])
+          : STAGE_PROBABILITY[newStage],
       };
-      
+
       await onUpdateDeal(draggableId, updates);
       
-      toast({
+      showToastOnce({
         title: "Deal Updated",
         description: `Deal moved to ${newStage} stage`,
       });
@@ -269,7 +501,7 @@ export const KanbanBoard = ({
       console.error("Error updating deal stage:", error);
       toast({
         title: "Error",
-        description: "Failed to update deal stage",
+        description: getErrorMessage(error, "Failed to update deal stage"),
         variant: "destructive",
       });
     }
@@ -331,15 +563,67 @@ export const KanbanBoard = ({
   const handleDealCardAction = async (dealId: string, newStage: DealStage) => {
     try {
       console.log(`Card action: Moving deal ${dealId} to stage ${newStage}`);
-      
-      // Create update object with the new stage
+
+      const existing = deals.find(d => d.id === dealId);
+      if (existing) {
+        const currentStage = existing.stage as DealStage;
+        const gate = isTransitionAllowed(currentStage, newStage, { isAdmin: isAdminOrAbove });
+        if (!gate.allowed) {
+          toast({ title: "Move blocked", description: gate.reason, variant: "destructive" });
+          return;
+        }
+        if (!isAdjacentPipelineMove(currentStage, newStage)) {
+          const next = getNextPipelineStage(currentStage, newStage);
+          toast({
+            title: "One stage at a time",
+            description: next
+              ? `Move to ${getStageLabel(next)} first before reaching ${getStageLabel(newStage)}.`
+              : `You can only move one pipeline stage at a time.`,
+            variant: "destructive",
+          });
+          return;
+        }
+        if (isBackwardPipelineMove(currentStage, newStage)) {
+          setPendingBackwardMove({
+            dealId,
+            deal: existing,
+            currentStage,
+            targetStage: newStage,
+          });
+          return;
+        }
+        const forward = isForwardPipelineMove(currentStage, newStage);
+        const validationStage: DealStage = TERMINAL_STAGES.includes(newStage)
+          ? newStage
+          : forward
+            ? currentStage
+            : newStage;
+        const dataForCheck = forward && !TERMINAL_STAGES.includes(newStage) ? existing : { ...existing, stage: newStage };
+        const fieldErrors = getFieldErrors(dataForCheck, validationStage);
+        const missing = Object.keys(fieldErrors);
+        if (missing.length > 0) {
+          setPendingTransition({
+            dealId,
+            targetStage: newStage,
+            missing,
+            mode: forward && !TERMINAL_STAGES.includes(newStage) ? 'fill-current' : 'move-to-target',
+            validationStage,
+          });
+          return;
+        }
+      }
+
+      // Hold preserves probability — see onDragEnd for rationale.
       const updates: Partial<Deal> = {
-        stage: newStage
+        stage: newStage,
+        probability: newStage === 'Hold'
+          ? (existing?.probability ?? STAGE_PROBABILITY[newStage])
+          : STAGE_PROBABILITY[newStage],
       };
-      
+
       await onUpdateDeal(dealId, updates);
       
-      toast({
+      showToastOnce({
         title: "Deal Updated",
         description: `Deal moved to ${newStage} stage`,
       });
@@ -347,7 +631,7 @@ export const KanbanBoard = ({
       console.error("Error updating deal stage:", error);
       toast({
         title: "Error",
-        description: "Failed to update deal stage",
+        description: getErrorMessage(error, "Failed to update deal stage"),
         variant: "destructive",
       });
     }
@@ -512,9 +796,9 @@ export const KanbanBoard = ({
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      {/* Header with Search/Filter Bar - above divider */}
-      <div className="flex-shrink-0 border-b border-border bg-background px-6 py-3">
-        <div className="flex flex-wrap items-center gap-3">
+      {/* Header with Search/Filter Bar - fixed height to align with sidebar logo divider */}
+      <div className="flex-shrink-0 h-16 border-b border-border bg-background px-6 flex items-center">
+        <div className="flex flex-1 items-center gap-3 overflow-hidden">
           <div className="relative flex-1 min-w-[200px] max-w-[300px]">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
             <Input
@@ -531,51 +815,94 @@ export const KanbanBoard = ({
             availableRegions={availableOptions.regions}
             availableLeadOwners={availableOptions.leadOwners}
             availablePriorities={availableOptions.priorities}
+            availableBUs={[...BU_OPTIONS]}
             availableHandoffStatuses={availableOptions.handoffStatuses}
           />
 
-          {(searchTerm || filters.stages.length > 0 || filters.regions.length > 0 || filters.leadOwners.length > 0 || filters.priorities.length > 0 || filters.handoffStatuses.length > 0) && (
-            <Button 
-              variant="ghost" 
+          <Select value={selectedYear} onValueChange={setSelectedYear}>
+            <SelectTrigger className="h-9 w-[170px] gap-2" title="Filter by last updated fiscal year (Apr–Mar)">
+              <CalendarDays className="w-4 h-4 opacity-70" />
+              <SelectValue placeholder="Fiscal year" />
+            </SelectTrigger>
+            <SelectContent className="bg-popover z-50">
+              <SelectItem value="all">All fiscal years</SelectItem>
+              {availableYears.map((y) => (
+                <SelectItem key={y} value={y.toString()}>
+                  {fiscalLabel(y)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {(searchTerm || filters.regions.length > 0 || filters.leadOwners.length > 0 || filters.priorities.length > 0 || filters.bus.length > 0) && (
+            <Button
+              variant="ghost"
               size="sm"
               onClick={() => {
                 setSearchTerm("");
                 setFilters({
-                  stages: [],
                   regions: [],
                   leadOwners: [],
                   priorities: [],
-                  handoffStatuses: [],
-                  searchTerm: "",
-                  probabilityRange: [0, 100],
+                  bus: [],
                 });
               }}
-              className="flex items-center gap-2 text-muted-foreground hover:text-foreground"
+              className="h-9 px-2 text-muted-foreground hover:text-foreground gap-1"
+              title="Clear filters"
             >
               <X className="w-4 h-4" />
-              Clear All
+              Clear
             </Button>
           )}
-          
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <Button
-              variant={selectionMode ? "default" : "outline"}
-              size="sm"
-              onClick={toggleSelectionMode}
-              className="hover-scale transition-all whitespace-nowrap text-sm h-9 px-3"
-            >
-              {selectionMode ? "Exit Selection" : "Select Deals"}
-            </Button>
-            
-            {selectionMode && selectedDeals.size > 0 && (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground whitespace-nowrap">
-                <span className="font-medium">{selectedDeals.size} selected</span>
-              </div>
-            )}
-          </div>
+
+          {selectionMode && selectedDeals.size > 0 && (
+            <BulkActionsBar
+              selectedCount={selectedDeals.size}
+              onDelete={handleBulkDelete}
+              onExport={handleBulkExport}
+              onClearSelection={() => setSelectedDeals(new Set())}
+              className="static translate-x-0 z-auto animate-none"
+            />
+          )}
 
           {/* Spacer */}
           <div className="flex-1" />
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9 w-9 p-0"
+                aria-label="More actions"
+              >
+                <MoreHorizontal className="w-4 h-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52 bg-popover z-50">
+              <DropdownMenuLabel>Actions</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={(e) => { e.preventDefault(); toggleSelectionMode(); }}>
+                <CheckSquare className="w-4 h-4 mr-2" />
+                {selectionMode ? "Exit selection" : "Select deals"}
+              </DropdownMenuItem>
+              {hasMore && onLoadAll && (
+                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); onLoadAll(); }}>
+                  <Download className="w-4 h-4 mr-2" />
+                  Load all deals
+                </DropdownMenuItem>
+              )}
+              {canArchive && onOpenArchive && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={(e) => { e.preventDefault(); onOpenArchive(); }}>
+                    <ArchiveIcon className="w-4 h-4 mr-2" />
+                    Archive
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           {headerActions}
         </div>
@@ -612,7 +939,7 @@ export const KanbanBoard = ({
           }}
         >
           {/* Sticky Stage Headers - scrolls horizontally with content, sticks to top on vertical scroll */}
-          <div className="sticky top-0 z-20 bg-background px-3 py-2 border-b border-border/30">
+          <div className="sticky top-0 z-20 bg-background px-3 pt-0 pb-1">
             <AnimatedStageHeaders
               visibleStages={visibleStages}
               expandedStage={expandedStage}
@@ -629,7 +956,7 @@ export const KanbanBoard = ({
           {/* Deal content grid with inline details panel */}
           <DragDropContext onDragStart={onDragStart} onDragEnd={onDragEnd}>
             <div 
-              className="grid gap-2 px-3 py-2 transition-all duration-300 ease-out"
+              className="grid gap-2 px-3 pt-0 pb-2 transition-all duration-300 ease-out"
               style={{ 
                 gridTemplateColumns: getGridColumns()
               }}
@@ -639,7 +966,7 @@ export const KanbanBoard = ({
                 const isExpandedStage = stage === expandedStage;
                 
                 return (
-                  <Fragment key={stage}>
+                  <div key={stage} className="contents">
                     {/* Stage column - add data attribute for DOM measurement */}
                     <div 
                       className="flex flex-col min-w-0"
@@ -669,7 +996,7 @@ export const KanbanBoard = ({
                                   {(provided, snapshot) => (
                                     <div
                                       ref={provided.innerRef}
-                                      {...provided.draggableProps}
+                                      {...(provided.draggableProps as any)}
                                       {...(!selectionMode && !isInlineExpanded ? provided.dragHandleProps : {})}
                                       className="relative group"
                                       data-deal-id={deal.id}
@@ -739,7 +1066,7 @@ export const KanbanBoard = ({
                         />
                       </div>
                     )}
-                  </Fragment>
+                  </div>
                 );
               })}
             </div>
@@ -747,15 +1074,6 @@ export const KanbanBoard = ({
         </div>
       </div>
 
-      {/* Fixed bottom bulk actions */}
-      <div className="flex-shrink-0">
-        <BulkActionsBar
-          selectedCount={selectedDeals.size}
-          onDelete={handleBulkDelete}
-          onExport={handleBulkExport}
-          onClearSelection={() => setSelectedDeals(new Set())}
-        />
-      </div>
        
       {/* Action Item Modal — lazy-mounted: useActionItems hook only fires when open */}
       {actionModalOpen && (
@@ -777,6 +1095,85 @@ export const KanbanBoard = ({
           }}
         />
       )}
+
+      {/* Inline required-field prompt for stage transitions */}
+      <MissingFieldsDialog
+        open={!!pendingTransition}
+        deal={pendingTransition ? deals.find(d => d.id === pendingTransition.dealId) ?? null : null}
+        targetStage={pendingTransition?.targetStage ?? null}
+        validationStage={pendingTransition?.validationStage ?? null}
+        mode={pendingTransition?.mode ?? 'move-to-target'}
+        missingFields={pendingTransition?.missing ?? []}
+        onCancel={() => setPendingTransition(null)}
+        onConfirm={async (updates) => {
+          if (!pendingTransition) return;
+          const { dealId, targetStage, mode } = pendingTransition;
+          try {
+            if (mode === 'fill-current') {
+              // Just save the current-stage fields; do NOT change stage yet.
+              await onUpdateDeal(dealId, updates);
+              setPendingTransition(null);
+              toast({
+                title: "Saved",
+                description: `Required fields completed. You can now move the deal to ${getStageLabel(targetStage)}.`,
+              });
+            } else {
+              await onUpdateDeal(dealId, {
+                ...updates,
+                stage: targetStage,
+                probability: targetStage === 'Hold'
+                  ? (deals.find(d => d.id === dealId)?.probability ?? STAGE_PROBABILITY[targetStage])
+                  : STAGE_PROBABILITY[targetStage],
+              });
+              setPendingTransition(null);
+              showToastOnce({
+                title: "Deal Updated",
+                description: `Deal moved to ${getStageLabel(targetStage)} stage`,
+              });
+            }
+          } catch (e) {
+            console.error('Error completing stage transition:', e);
+            toast({
+              title: "Error",
+              description: getErrorMessage(e, "Failed to update deal stage"),
+              variant: "destructive",
+            });
+          }
+        }}
+      />
+
+      {/* Backward drag confirmation */}
+      <BackwardStageConfirmDialog
+        open={!!pendingBackwardMove}
+        currentStage={pendingBackwardMove?.currentStage ?? null}
+        targetStage={pendingBackwardMove?.targetStage ?? null}
+        deal={pendingBackwardMove?.deal ?? null}
+        onCancel={() => setPendingBackwardMove(null)}
+        onConfirm={async (choice) => {
+          if (!pendingBackwardMove) return;
+          const { dealId, currentStage, targetStage, deal } = pendingBackwardMove;
+          setPendingBackwardMove(null);
+          const updates = buildBackwardMoveUpdates(currentStage, targetStage, choice, deal);
+          try {
+            await onUpdateDeal(dealId, {
+              ...updates,
+            });
+            showToastOnce({
+              title: "Deal Updated",
+              description: `Deal moved back to ${getStageLabel(targetStage)} stage`,
+            });
+          } catch (e) {
+            console.error('Error moving deal backward:', e);
+            toast({
+              title: "Error",
+              description: getErrorMessage(e, "Failed to update deal stage"),
+              variant: "destructive",
+            });
+          }
+        }}
+      />
+
+
     </div>
   );
 };

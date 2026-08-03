@@ -7,10 +7,11 @@
 // once per trigger, even on retries.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { requireCronSecret } from "../_shared/auth-gate.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-cron-secret",
 };
 
 interface Trigger {
@@ -29,11 +30,18 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
+
+  const supabase = createClient(
+    Deno.env.get("SUPABASE_URL") ?? "",
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
+  );
+
+  // Cron-only endpoint. Fail-closed cron gate.
+  const cron = requireCronSecret(req);
+  if ("response" in cron) return cron.response;
+
+
   try {
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
-    );
 
     const { data: triggers, error: tErr } = await supabase
       .from("campaign_automation_triggers")
@@ -119,45 +127,53 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // Enroll: insert into campaign_contacts (skip if already there) and into
-      // the audit table (idempotent via UNIQUE).
-      let enrolledThisTrigger = 0;
-      for (const { contact_id, account_id } of contactIds) {
-        // Already in campaign?
-        const { count: alreadyIn } = await supabase
+      // Enroll: bulk-check existing rows, then bulk-insert. Prior version did
+      // 2 count-queries + 2 inserts per contact — O(N) round-trips.
+      const cids = contactIds.map((c) => c.contact_id);
+      const [{ data: existingCC }, { data: existingEnr }] = await Promise.all([
+        supabase
           .from("campaign_contacts")
-          .select("id", { count: "exact", head: true })
+          .select("contact_id")
           .eq("campaign_id", trig.target_campaign_id)
-          .eq("contact_id", contact_id);
-        if ((alreadyIn ?? 0) > 0) continue;
-
-        // Audit: skip if previously enrolled by this trigger (handles deletion + re-add).
-        const { count: alreadyAudited } = await supabase
+          .in("contact_id", cids),
+        supabase
           .from("campaign_automation_enrollments")
-          .select("id", { count: "exact", head: true })
+          .select("contact_id")
           .eq("trigger_id", trig.id)
-          .eq("contact_id", contact_id);
-        if ((alreadyAudited ?? 0) > 0) continue;
+          .in("contact_id", cids),
+      ]);
+      const skip = new Set<string>([
+        ...(existingCC || []).map((r: any) => r.contact_id),
+        ...(existingEnr || []).map((r: any) => r.contact_id),
+      ]);
+      const toInsert = contactIds.filter((c) => !skip.has(c.contact_id));
 
-        const { error: ccErr } = await supabase.from("campaign_contacts").insert({
-          campaign_id: trig.target_campaign_id,
-          contact_id,
-          account_id,
-          stage: "Not Contacted",
-          created_by: trig.created_by,
-        });
+      let enrolledThisTrigger = 0;
+      if (toInsert.length > 0) {
+        const { error: ccErr } = await supabase.from("campaign_contacts").insert(
+          toInsert.map(({ contact_id, account_id }) => ({
+            campaign_id: trig.target_campaign_id,
+            contact_id,
+            account_id,
+            stage: "Not Contacted",
+            created_by: trig.created_by,
+          })),
+        );
         if (ccErr) {
-          trace.push({ trigger: trig.id, contact: contact_id, error: ccErr.message });
-          continue;
+          trace.push({ trigger: trig.id, error: `bulk insert campaign_contacts: ${ccErr.message}` });
+        } else {
+          await supabase.from("campaign_automation_enrollments").insert(
+            toInsert.map(({ contact_id, account_id }) => ({
+              trigger_id: trig.id,
+              campaign_id: trig.target_campaign_id,
+              contact_id,
+              account_id,
+            })),
+          );
+          enrolledThisTrigger = toInsert.length;
         }
-        await supabase.from("campaign_automation_enrollments").insert({
-          trigger_id: trig.id,
-          campaign_id: trig.target_campaign_id,
-          contact_id,
-          account_id,
-        });
-        enrolledThisTrigger++;
       }
+
 
       await supabase
         .from("campaign_automation_triggers")

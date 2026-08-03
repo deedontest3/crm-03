@@ -50,9 +50,14 @@ export class GenericCSVExporter {
 
     // Convert to CSV string with proper escaping
     const csvContent = allRows
-      .map(row => 
+      .map(row =>
         row.map(field => {
-          const str = String(field || '');
+          let str = String(field || '');
+          // Neutralize CSV formula-injection (CWE-1236) before delimiter escaping.
+          const first = str.charAt(0);
+          if (first === '=' || first === '+' || first === '-' || first === '@' || first === '\t' || first === '\r') {
+            str = `'${str}`;
+          }
           if (str.includes(',') || str.includes('"') || str.includes('\n')) {
             return `"${str.replace(/"/g, '""')}"`;
           }
@@ -60,6 +65,7 @@ export class GenericCSVExporter {
         }).join(',')
       )
       .join('\n');
+
 
     console.log(`GenericCSVExporter: CSV content generated, length:`, csvContent.length);
     

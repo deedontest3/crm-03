@@ -8,109 +8,45 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
+// Previously this endpoint fabricated a random UUID as a "Teams join URL" and
+// logged a fake TEAMS_MEETING_CREATED audit event. That link 404s in Teams —
+// worse, downstream code and the audit trail believed a real meeting existed.
+// Until a proper Microsoft Graph /onlineMeetings integration is wired up, this
+// endpoint returns 501 and does NOT write to the audit log.
 serve(async (req) => {
-  // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    // Create Supabase client for authentication
+    // Still require auth so we don't leak the "not configured" signal to
+    // unauthenticated probes and so we get a real caller in logs if this is hit.
     const supabaseClient = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_ANON_KEY') ?? '',
-      {
-        global: {
-          headers: { Authorization: req.headers.get('Authorization')! },
-        },
-      }
+      { global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } } },
     );
-
-    // Verify user is authenticated
     const { data: { user }, error: authError } = await supabaseClient.auth.getUser();
-
     if (authError || !user) {
-      console.error('Authentication error:', authError);
       return new Response(
         JSON.stringify({ error: 'Authentication required' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
-    console.log('Authenticated user:', user.email);
-
-    if (req.method !== 'POST') {
-      return new Response(
-        JSON.stringify({ error: 'Method not allowed' }),
-        { status: 405, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const { subject, attendees, startTime, endTime } = await req.json();
-
-    if (!subject || !attendees || !startTime || !endTime) {
-      return new Response(
-        JSON.stringify({ error: 'Missing required fields: subject, attendees, startTime, endTime' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // Log the meeting creation attempt for security audit
-    const adminClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    );
-
-    try {
-      await adminClient.rpc('log_security_event', {
-        p_action: 'TEAMS_MEETING_CREATED',
-        p_resource_type: 'meeting',
-        p_details: {
-          subject,
-          attendee_count: attendees.length,
-          created_by: user.id,
-          created_at: new Date().toISOString()
-        }
-      });
-    } catch (logError) {
-      console.warn('Failed to log security event:', logError);
-    }
-
-    // Create meeting object (simplified - in production you'd integrate with Microsoft Graph API)
-    const meeting = {
-      id: crypto.randomUUID(),
-      subject,
-      attendees,
-      startTime,
-      endTime,
-      organizer: user.email,
-      joinUrl: `https://teams.microsoft.com/l/meetup-join/${crypto.randomUUID()}`,
-      createdAt: new Date().toISOString(),
-      createdBy: user.id
-    };
-
-    console.log('Teams meeting created:', meeting.id);
-
+    console.warn(`[create-teams-meeting] called by ${user.email} but Graph integration is not configured — returning 501`);
     return new Response(
-      JSON.stringify({ 
-        success: true,
-        meeting,
-        message: 'Teams meeting created successfully'
+      JSON.stringify({
+        error: 'Teams meeting integration is not configured',
+        detail: 'This endpoint no longer fabricates fake join links. Wire Microsoft Graph /onlineMeetings before enabling.',
       }),
-      { 
-        status: 200, 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-      }
+      { status: 501, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
-
   } catch (error: any) {
-    console.error('Error creating Teams meeting:', error);
+    console.error('create-teams-meeting error:', error);
     return new Response(
-      JSON.stringify({ 
-        error: 'Internal server error',
-        details: error.message 
-      }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      JSON.stringify({ error: 'Internal server error', details: error.message }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   }
 });

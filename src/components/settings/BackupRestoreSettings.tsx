@@ -25,6 +25,9 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
+import AdvancedBackupPanel from "./backup/AdvancedBackupPanel";
+import AdvancedRestorePanel from "./backup/AdvancedRestorePanel";
+import { Sparkles } from "lucide-react";
 
 interface Backup {
   id: string;
@@ -125,7 +128,7 @@ const BackupRestoreSettings = () => {
   });
   const [savingSchedule, setSavingSchedule] = useState(false);
   const [moduleCounts, setModuleCounts] = useState<Record<string, number>>({});
-  const { isAdmin, loading: roleLoading } = useUserRole();
+  const { isAdminOrAbove, loading: roleLoading } = useUserRole();
   const { user } = useAuth();
 
   const fetchBackups = useCallback(async () => {
@@ -181,14 +184,14 @@ const BackupRestoreSettings = () => {
   }, []);
 
   useEffect(() => {
-    if (!roleLoading && isAdmin) {
+    if (!roleLoading && isAdminOrAbove) {
       fetchBackups();
       fetchSchedule();
       fetchModuleCounts();
     } else if (!roleLoading) {
       setLoading(false);
     }
-  }, [fetchBackups, fetchSchedule, fetchModuleCounts, isAdmin, roleLoading]);
+  }, [fetchBackups, fetchSchedule, fetchModuleCounts, isAdminOrAbove, roleLoading]);
 
   const handleSaveSchedule = async (newSchedule: BackupSchedule) => {
     setSavingSchedule(true);
@@ -324,7 +327,7 @@ const BackupRestoreSettings = () => {
     );
   }
 
-  if (!isAdmin) {
+  if (!isAdminOrAbove) {
     return (
       <div className="flex flex-col items-center justify-center h-32 text-center">
         <ShieldAlert className="h-12 w-12 text-muted-foreground mb-4" />
@@ -340,248 +343,266 @@ const BackupRestoreSettings = () => {
 
   return (
     <>
-      <div className="space-y-5">
-        {/* Top Row: Full Backup + Schedule */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Full Backup */}
-          <Card>
-            <CardContent className="pt-5 pb-5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <Database className="h-5 w-5 text-muted-foreground" />
-                  <div>
-                    <p className="font-medium text-sm">Full System Backup</p>
-                    <p className="text-xs text-muted-foreground">All CRM data & settings</p>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        {/* Left: standard backup management */}
+        <div className="lg:col-span-2 space-y-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Full Backup */}
+            <Card>
+              <CardContent className="pt-5 pb-5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <Database className="h-5 w-5 text-muted-foreground" />
+                    <div>
+                      <p className="font-medium text-sm">Full System Backup</p>
+                      <p className="text-xs text-muted-foreground">All CRM data & settings</p>
+                    </div>
+                  </div>
+                  <Button size="sm" onClick={() => handleCreateBackup()} disabled={creating}>
+                    {creating ? (
+                      <RefreshCw className="h-4 w-4 mr-1.5 animate-spin" />
+                    ) : (
+                      <Download className="h-4 w-4 mr-1.5" />
+                    )}
+                    {creating ? 'Creating...' : 'Backup Now'}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Scheduled Backup */}
+            <Card>
+              <CardContent className="pt-5 pb-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <CalendarClock className="h-5 w-5 text-muted-foreground" />
+                    <div>
+                      <p className="font-medium text-sm">Scheduled Backups</p>
+                      <p className="text-xs text-muted-foreground">
+                        {schedule.is_enabled && schedule.next_run_at
+                          ? `Next: ${format(new Date(schedule.next_run_at), 'MMM d, HH:mm')}`
+                          : 'Auto-backup on a schedule'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={schedule.is_enabled}
+                      onCheckedChange={(checked) => {
+                        const newSchedule = { ...schedule, is_enabled: checked };
+                        setSchedule(newSchedule);
+                        handleSaveSchedule(newSchedule);
+                      }}
+                    />
+                    {savingSchedule && <RefreshCw className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
                   </div>
                 </div>
-                <Button size="sm" onClick={() => handleCreateBackup()} disabled={creating}>
-                  {creating ? (
-                    <RefreshCw className="h-4 w-4 mr-1.5 animate-spin" />
-                  ) : (
-                    <Download className="h-4 w-4 mr-1.5" />
-                  )}
-                  {creating ? 'Creating...' : 'Backup Now'}
+
+                {schedule.is_enabled && (
+                  <div className="grid grid-cols-3 gap-2">
+                    <Select
+                      value={schedule.backup_scope === 'full' ? 'full' : (schedule.backup_module || 'full')}
+                      onValueChange={(value) => {
+                        const isModule = value !== 'full';
+                        const newSchedule = {
+                          ...schedule,
+                          backup_scope: isModule ? 'module' : 'full',
+                          backup_module: isModule ? value : null,
+                        };
+                        setSchedule(newSchedule);
+                        handleSaveSchedule(newSchedule);
+                      }}
+                    >
+                      <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Scope" /></SelectTrigger>
+                      <SelectContent>
+                        {SCOPE_OPTIONS.map(opt => (
+                          <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+
+                    <Select
+                      value={schedule.frequency}
+                      onValueChange={(value) => {
+                        const newSchedule = { ...schedule, frequency: value };
+                        setSchedule(newSchedule);
+                        handleSaveSchedule(newSchedule);
+                      }}
+                    >
+                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {Object.entries(FREQUENCY_LABELS).map(([key, label]) => (
+                          <SelectItem key={key} value={key}>{label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+
+                    <Select
+                      value={schedule.time_of_day}
+                      onValueChange={(value) => {
+                        const newSchedule = { ...schedule, time_of_day: value };
+                        setSchedule(newSchedule);
+                        handleSaveSchedule(newSchedule);
+                      }}
+                    >
+                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="00:00">12:00 AM</SelectItem>
+                        <SelectItem value="06:00">6:00 AM</SelectItem>
+                        <SelectItem value="12:00">12:00 PM</SelectItem>
+                        <SelectItem value="18:00">6:00 PM</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Module Backup */}
+          <Card>
+            <CardHeader className="pb-3 pt-4 px-5">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm font-medium">Module Backup</CardTitle>
+                <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={fetchModuleCounts}>
+                  <RefreshCw className="h-3 w-3 mr-1" /> Refresh
                 </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="px-5 pb-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
+                {MODULES.map((module) => {
+                  const Icon = module.icon;
+                  const isCreating = creatingModule === module.id;
+                  return (
+                    <Button
+                      key={module.id}
+                      variant="outline"
+                      size="sm"
+                      className="h-auto py-2.5 px-3 flex flex-col items-center gap-1"
+                      onClick={() => handleCreateBackup(module.id)}
+                      disabled={isCreating}
+                    >
+                      {isCreating ? (
+                        <RefreshCw className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Icon className={`h-4 w-4 ${module.color}`} />
+                      )}
+                      <span className="text-xs font-medium">{module.name}</span>
+                      <span className="text-[10px] text-muted-foreground">
+                        {moduleCounts[module.id]?.toLocaleString() || 0}
+                      </span>
+                    </Button>
+                  );
+                })}
               </div>
             </CardContent>
           </Card>
 
-          {/* Scheduled Backup */}
+          {/* Backup History */}
           <Card>
-            <CardContent className="pt-5 pb-5 space-y-3">
+            <CardHeader className="pb-3 pt-4 px-5">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <CalendarClock className="h-5 w-5 text-muted-foreground" />
-                  <div>
-                    <p className="font-medium text-sm">Scheduled Backups</p>
-                    <p className="text-xs text-muted-foreground">
-                      {schedule.is_enabled && schedule.next_run_at
-                        ? `Next: ${format(new Date(schedule.next_run_at), 'MMM d, HH:mm')}`
-                        : 'Auto-backup on a schedule'}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Switch
-                    checked={schedule.is_enabled}
-                    onCheckedChange={(checked) => {
-                      const newSchedule = { ...schedule, is_enabled: checked };
-                      setSchedule(newSchedule);
-                      handleSaveSchedule(newSchedule);
-                    }}
-                  />
-                  {savingSchedule && <RefreshCw className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
-                </div>
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <Clock className="h-4 w-4" /> Backup History
+                </CardTitle>
+                <Badge variant="secondary" className="text-xs">{backups.length} / 30</Badge>
               </div>
-
-              {schedule.is_enabled && (
-                <div className="grid grid-cols-3 gap-2">
-                  {/* Scope */}
-                  <Select
-                    value={schedule.backup_scope === 'full' ? 'full' : (schedule.backup_module || 'full')}
-                    onValueChange={(value) => {
-                      const isModule = value !== 'full';
-                      const newSchedule = {
-                        ...schedule,
-                        backup_scope: isModule ? 'module' : 'full',
-                        backup_module: isModule ? value : null,
-                      };
-                      setSchedule(newSchedule);
-                      handleSaveSchedule(newSchedule);
-                    }}
-                  >
-                    <SelectTrigger className="h-8 text-xs">
-                      <SelectValue placeholder="Scope" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {SCOPE_OPTIONS.map(opt => (
-                        <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+            </CardHeader>
+            <CardContent className="px-5 pb-4">
+              {backups.length === 0 ? (
+                <div className="text-center py-6 text-muted-foreground">
+                  <Database className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                  <p className="text-sm">No backups yet</p>
+                </div>
+              ) : (
+                <div className="overflow-auto max-h-[600px]">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="text-xs w-[160px]">Type</TableHead>
+                        <TableHead className="text-xs w-[150px]">Date</TableHead>
+                        <TableHead className="text-xs w-[100px] text-right">Records</TableHead>
+                        <TableHead className="text-xs w-[80px] text-right">Size</TableHead>
+                        <TableHead className="text-xs w-[100px] text-right">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {backups.map((backup) => (
+                        <TableRow key={backup.id} className="text-xs">
+                          <TableCell className="py-2">
+                            <div className="flex items-center gap-1.5">
+                              <FileJson className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                              <span className="font-medium">{getBackupLabel(backup)}</span>
+                            </div>
+                          </TableCell>
+                          <TableCell className="py-2 text-muted-foreground">
+                            {format(new Date(backup.created_at), 'dd MMM yyyy, HH:mm')}
+                          </TableCell>
+                          <TableCell className="py-2 text-right text-muted-foreground">
+                            {backup.records_count?.toLocaleString() || 0}
+                          </TableCell>
+                          <TableCell className="py-2 text-right text-muted-foreground">
+                            {formatBytes(backup.size_bytes)}
+                          </TableCell>
+                          <TableCell className="py-2 text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                variant="ghost" size="sm" className="h-7 w-7 p-0"
+                                onClick={() => handleDownloadBackup(backup)}
+                                title="Download"
+                              >
+                                <Download className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="ghost" size="sm" className="h-7 w-7 p-0"
+                                onClick={() => handleRestoreClick(backup)}
+                                disabled={restoring === backup.id}
+                                title="Restore"
+                              >
+                                {restoring === backup.id ? (
+                                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <RotateCcw className="h-3.5 w-3.5" />
+                                )}
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
                       ))}
-                    </SelectContent>
-                  </Select>
-
-                  {/* Frequency */}
-                  <Select
-                    value={schedule.frequency}
-                    onValueChange={(value) => {
-                      const newSchedule = { ...schedule, frequency: value };
-                      setSchedule(newSchedule);
-                      handleSaveSchedule(newSchedule);
-                    }}
-                  >
-                    <SelectTrigger className="h-8 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {Object.entries(FREQUENCY_LABELS).map(([key, label]) => (
-                        <SelectItem key={key} value={key}>{label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-
-                  {/* Time */}
-                  <Select
-                    value={schedule.time_of_day}
-                    onValueChange={(value) => {
-                      const newSchedule = { ...schedule, time_of_day: value };
-                      setSchedule(newSchedule);
-                      handleSaveSchedule(newSchedule);
-                    }}
-                  >
-                    <SelectTrigger className="h-8 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="00:00">12:00 AM</SelectItem>
-                      <SelectItem value="06:00">6:00 AM</SelectItem>
-                      <SelectItem value="12:00">12:00 PM</SelectItem>
-                      <SelectItem value="18:00">6:00 PM</SelectItem>
-                    </SelectContent>
-                  </Select>
+                    </TableBody>
+                  </Table>
                 </div>
               )}
             </CardContent>
           </Card>
         </div>
 
-        {/* Module Backup */}
-        <Card>
-          <CardHeader className="pb-3 pt-4 px-5">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-medium">Module Backup</CardTitle>
-              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={fetchModuleCounts}>
-                <RefreshCw className="h-3 w-3 mr-1" /> Refresh
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="px-5 pb-4">
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
-              {MODULES.map((module) => {
-                const Icon = module.icon;
-                const isCreating = creatingModule === module.id;
-                return (
-                  <Button
-                    key={module.id}
-                    variant="outline"
-                    size="sm"
-                    className="h-auto py-2.5 px-3 flex flex-col items-center gap-1"
-                    onClick={() => handleCreateBackup(module.id)}
-                    disabled={isCreating}
-                  >
-                    {isCreating ? (
-                      <RefreshCw className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Icon className={`h-4 w-4 ${module.color}`} />
-                    )}
-                    <span className="text-xs font-medium">{module.name}</span>
-                    <span className="text-[10px] text-muted-foreground">
-                      {moduleCounts[module.id]?.toLocaleString() || 0}
-                    </span>
-                  </Button>
-                );
-              })}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Backup History */}
-        <Card>
-          <CardHeader className="pb-3 pt-4 px-5">
-            <div className="flex items-center justify-between">
+        {/* Right: Advanced Backup & Restore */}
+        <div className="lg:col-span-1">
+          <Card className="lg:sticky lg:top-4">
+            <CardHeader className="pb-3 pt-4 px-5">
               <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Clock className="h-4 w-4" /> Backup History
+                <Sparkles className="h-4 w-4 text-primary" />
+                Advanced Backup &amp; Restore
+                <Badge variant="outline" className="text-[10px]">Beta</Badge>
               </CardTitle>
-              <Badge variant="secondary" className="text-xs">{backups.length} / 30</Badge>
-            </div>
-          </CardHeader>
-          <CardContent className="px-5 pb-4">
-            {backups.length === 0 ? (
-              <div className="text-center py-6 text-muted-foreground">
-                <Database className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                <p className="text-sm">No backups yet</p>
+            </CardHeader>
+            <CardContent className="px-5 pb-4 space-y-4">
+              <p className="text-xs text-muted-foreground">
+                Schema-aware backups with compression &amp; checksum. Upload a backup from any
+                project to compare structures and choose what to restore per table / column,
+                with email-based user remapping.
+              </p>
+              <div className="space-y-4">
+                <AdvancedBackupPanel onCreated={fetchBackups} />
+                <AdvancedRestorePanel />
               </div>
-            ) : (
-              <div className="overflow-auto max-h-[600px]">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="text-xs w-[160px]">Type</TableHead>
-                      <TableHead className="text-xs w-[150px]">Date</TableHead>
-                      <TableHead className="text-xs w-[100px] text-right">Records</TableHead>
-                      <TableHead className="text-xs w-[80px] text-right">Size</TableHead>
-                      <TableHead className="text-xs w-[100px] text-right">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {backups.map((backup) => (
-                      <TableRow key={backup.id} className="text-xs">
-                        <TableCell className="py-2">
-                          <div className="flex items-center gap-1.5">
-                            <FileJson className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                            <span className="font-medium">{getBackupLabel(backup)}</span>
-                          </div>
-                        </TableCell>
-                        <TableCell className="py-2 text-muted-foreground">
-                          {format(new Date(backup.created_at), 'dd MMM yyyy, HH:mm')}
-                        </TableCell>
-                        <TableCell className="py-2 text-right text-muted-foreground">
-                          {backup.records_count?.toLocaleString() || 0}
-                        </TableCell>
-                        <TableCell className="py-2 text-right text-muted-foreground">
-                          {formatBytes(backup.size_bytes)}
-                        </TableCell>
-                        <TableCell className="py-2 text-right">
-                          <div className="flex items-center justify-end gap-1">
-                            <Button
-                              variant="ghost" size="sm" className="h-7 w-7 p-0"
-                              onClick={() => handleDownloadBackup(backup)}
-                              title="Download"
-                            >
-                              <Download className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost" size="sm" className="h-7 w-7 p-0"
-                              onClick={() => handleRestoreClick(backup)}
-                              disabled={restoring === backup.id}
-                              title="Restore"
-                            >
-                              {restoring === backup.id ? (
-                                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                              ) : (
-                                <RotateCcw className="h-3.5 w-3.5" />
-                              )}
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </div>
       </div>
+
 
       {/* Restore Confirmation Dialog */}
       <AlertDialog open={showRestoreDialog} onOpenChange={setShowRestoreDialog}>

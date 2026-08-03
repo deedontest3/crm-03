@@ -10,6 +10,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { format } from "date-fns";
 import { useSecurityAudit } from "@/hooks/useSecurityAudit";
+import { AppLoader } from "@/components/ui/loader";
 interface SessionData {
   id: string;
   device: string;
@@ -220,7 +221,7 @@ const SecuritySettings = () => {
   if (loading) {
     return <div className="space-y-6">
         <div className="flex items-center justify-center h-32">
-          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
+          <AppLoader variant="panel" />
         </div>
       </div>;
   }

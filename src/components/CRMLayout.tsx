@@ -3,10 +3,11 @@ import { ReactNode } from "react";
 import { AppSidebar } from "./AppSidebar";
 import { NotificationBell } from "./NotificationBell";
 import { Button } from "./ui/button";
-import { User, LogOut, Loader2, MapPin } from "lucide-react";
+import { User, LogOut, MapPin } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useLocation } from "react-router-dom";
 import { useIsFetching } from "@tanstack/react-query";
+import { AppLoader } from "@/components/ui/loader";
 
 interface CRMLayoutProps {
   children: ReactNode;
@@ -24,7 +25,7 @@ export const CRMLayout = ({ children }: CRMLayoutProps) => {
       <AppSidebar />
       <div className="flex-1 flex flex-col">
         {/* Top Navigation Bar */}
-        <header className="bg-white border-b border-border px-6 py-4 flex items-center justify-between shadow-sm">
+        <header className="bg-white border-b border-border px-6 h-16 flex items-center justify-between shadow-sm">
           <div className="flex items-center gap-4">
             <h1 className="text-xl font-semibold text-foreground">CRM Dashboard</h1>
             <div
@@ -36,7 +37,7 @@ export const CRMLayout = ({ children }: CRMLayoutProps) => {
               <span className="mx-1 h-3 w-px bg-border" />
               {isFetching ? (
                 <span className="flex items-center gap-1 text-primary">
-                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <AppLoader variant="inline" />
                   Fetching {fetchingCount}
                 </span>
               ) : (
@@ -58,7 +59,7 @@ export const CRMLayout = ({ children }: CRMLayoutProps) => {
                 <User className="h-4 w-4" />
                 <span className="text-sm">{user?.email}</span>
               </Button>
-              <Button variant="ghost" size="sm" onClick={signOut}>
+              <Button variant="ghost" size="sm" onClick={signOut} aria-label="Sign out">
                 <LogOut className="h-4 w-4" />
               </Button>
             </div>

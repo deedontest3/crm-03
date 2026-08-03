@@ -6,6 +6,7 @@ import { AlarmClock, Check, Mail, Bell, TrendingUp, ListChecks, Building2, Users
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { useSecurityAudit } from '@/hooks/useSecurityAudit';
+import { AppLoader } from '@/components/ui/loader';
 
 interface NotificationPrefs {
   email_notifications: boolean;
@@ -102,7 +103,10 @@ const NotificationsSection = ({ notificationPrefs, setNotificationPrefs, userId,
       {saveStatus !== 'idle' && (
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground animate-in fade-in duration-200">
           {saveStatus === 'saving' && (
-            <span className="text-muted-foreground">Saving...</span>
+            <>
+              <AppLoader variant="inline" label="Saving notification preferences" />
+              <span className="text-muted-foreground">Saving…</span>
+            </>
           )}
           {saveStatus === 'saved' && (
             <>
@@ -149,9 +153,11 @@ const NotificationsSection = ({ notificationPrefs, setNotificationPrefs, userId,
 
           {/* Frequency */}
           <div className="flex items-center justify-between px-4 py-3">
-            <div>
+            <div className="pr-4">
               <Label className="text-sm font-medium">Frequency</Label>
-              <p className="text-xs text-muted-foreground">How often to receive notifications</p>
+              <p className="text-xs text-muted-foreground">
+                Instant delivers each event as it happens. Daily / Weekly digests batch non-urgent items into one summary.
+              </p>
             </div>
             <Select value={notificationPrefs.notification_frequency} onValueChange={(v) => updatePref('notification_frequency', v)}>
               <SelectTrigger className="w-[130px] h-8 text-sm">
@@ -195,8 +201,13 @@ const NotificationsSection = ({ notificationPrefs, setNotificationPrefs, userId,
 
       {/* Notify Me About */}
       <div className="space-y-3">
-        <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Notify Me About</h4>
-        <div className="rounded-lg border border-border bg-card divide-y divide-border">
+        <div className="flex items-center justify-between">
+          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Notify Me About</h4>
+          {!notificationPrefs.in_app_notifications && (
+            <p className="text-xs text-muted-foreground italic">In-app notifications are off — these toggles have no effect until you re-enable them.</p>
+          )}
+        </div>
+        <div className={`rounded-lg border border-border bg-card divide-y divide-border ${!notificationPrefs.in_app_notifications ? 'opacity-60' : ''}`}>
           {/* Deal Stage Changes */}
           <div className="flex items-center justify-between px-4 py-3">
             <div className="flex items-center gap-3">
@@ -218,7 +229,7 @@ const NotificationsSection = ({ notificationPrefs, setNotificationPrefs, userId,
               <ListChecks className="h-4 w-4 text-muted-foreground" />
               <div>
                 <Label className="text-sm font-medium">Action Item Reminders</Label>
-                <p className="text-xs text-muted-foreground">Overdue and high-priority task alerts</p>
+                <p className="text-xs text-muted-foreground">Overdue and high-priority action item alerts</p>
               </div>
             </div>
             <Switch
@@ -257,13 +268,13 @@ const NotificationsSection = ({ notificationPrefs, setNotificationPrefs, userId,
             />
           </div>
 
-          {/* Deals module (mapped to leads_notifications DB column) */}
+          {/* Leads */}
           <div className="flex items-center justify-between px-4 py-3">
             <div className="flex items-center gap-3">
               <TrendingUp className="h-4 w-4 text-muted-foreground" />
               <div>
-                <Label className="text-sm font-medium">Deal Notifications</Label>
-                <p className="text-xs text-muted-foreground">All deal-related activity notifications</p>
+                <Label className="text-sm font-medium">Lead Updates</Label>
+                <p className="text-xs text-muted-foreground">Lead status and assignment notifications</p>
               </div>
             </div>
             <Switch

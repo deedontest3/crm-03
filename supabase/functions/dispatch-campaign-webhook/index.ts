@@ -7,11 +7,14 @@
 // Records every attempt in `campaign_webhook_deliveries`.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { requireAdmin, requireCronSecret } from "../_shared/auth-gate.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-cron-secret",
 };
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface DispatchBody {
   event_type: string;        // 'sent' | 'replied' | 'bounced' | 'opened' ...
@@ -31,6 +34,17 @@ async function hmacSha256Hex(secret: string, message: string): Promise<string> {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
+  // Fail-closed auth: invoked by cron (with x-cron-secret) OR by an admin
+  // re-firing a delivery from the UI. Anonymous callers and non-admin users
+  // are rejected.
+  const cronGate = requireCronSecret(req);
+  if ("response" in cronGate) {
+    // No valid cron secret — fall back to admin JWT.
+    const adminGate = await requireAdmin(req);
+    if ("response" in adminGate) return adminGate.response;
+  }
+
+
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
@@ -46,6 +60,13 @@ Deno.serve(async (req) => {
   if (!body.event_type) {
     return new Response(JSON.stringify({ error: "event_type required" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
+
+  // Sanitize campaign_id — it flows into an .or() filter, so reject anything
+  // that isn't a UUID before it can influence the PostgREST query string.
+  if (body.campaign_id !== null && body.campaign_id !== undefined && !UUID_RE.test(String(body.campaign_id))) {
+    return new Response(JSON.stringify({ error: "campaign_id must be a UUID or null" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  }
+
 
   // Match: webhook is enabled, subscribed to event_type, and either
   // campaign-scoped to the same campaign or global (campaign_id is NULL).

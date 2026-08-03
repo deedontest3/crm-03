@@ -73,13 +73,23 @@ export default {
     				'rfq-foreground': 'hsl(var(--stage-rfq-foreground))',
     				offered: 'hsl(var(--stage-offered))',
     				'offered-foreground': 'hsl(var(--stage-offered-foreground))',
+    				negotiation: 'hsl(var(--stage-negotiation))',
+    				'negotiation-foreground': 'hsl(var(--stage-negotiation-foreground))',
+    				'verbal-approval': 'hsl(var(--stage-verbal-approval))',
+    				'verbal-approval-foreground': 'hsl(var(--stage-verbal-approval-foreground))',
     				won: 'hsl(var(--stage-won))',
     				'won-foreground': 'hsl(var(--stage-won-foreground))',
     				lost: 'hsl(var(--stage-lost))',
     				'lost-foreground': 'hsl(var(--stage-lost-foreground))',
+    				hold: 'hsl(var(--stage-hold))',
+    				'hold-foreground': 'hsl(var(--stage-hold-foreground))',
     				dropped: 'hsl(var(--stage-dropped))',
     				'dropped-foreground': 'hsl(var(--stage-dropped-foreground))'
     			}
+    		},
+    		fontFamily: {
+    			sora: ['Sora', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+    			manrope: ['Manrope', 'ui-sans-serif', 'system-ui', 'sans-serif'],
     		},
     		borderRadius: {
     			lg: 'var(--radius)',
@@ -193,6 +203,22 @@ export default {
     		'fade-in': {
     			'0%': { opacity: '0' },
     			'100%': { opacity: '1' }
+    		},
+    		'sheen': {
+    			'0%': { transform: 'translateX(-120%) skewX(-12deg)' },
+    			'100%': { transform: 'translateX(220%) skewX(-12deg)' }
+    		},
+    		'shimmer': {
+    			'0%': { backgroundPosition: '-200% 0' },
+    			'100%': { backgroundPosition: '200% 0' }
+    		},
+    		'rise-in': {
+    			'0%': { opacity: '0', transform: 'translateY(12px)' },
+    			'100%': { opacity: '1', transform: 'translateY(0)' }
+    		},
+    		'bar-grow': {
+    			'0%': { transform: 'scaleX(0)' },
+    			'100%': { transform: 'scaleX(1)' }
     		}
     		},
     		animation: {
@@ -214,7 +240,12 @@ export default {
      		'fade-slide-out-left': 'fade-slide-out-left 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards',
      		'fade-slide-in-left': 'fade-slide-in-left 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards',
      		'fade-out': 'fade-out 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards',
-     		'fade-in': 'fade-in 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards'
+     		'fade-out': 'fade-out 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards',
+     		'fade-in': 'fade-in 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards',
+     		'sheen': 'sheen 1.1s ease-out',
+     		'shimmer': 'shimmer 1.6s linear infinite',
+     		'rise-in': 'rise-in 0.55s cubic-bezier(0.16, 1, 0.3, 1) both',
+     		'bar-grow': 'bar-grow 0.8s cubic-bezier(0.16, 1, 0.3, 1) both'
     		},
     		boxShadow: {
     			'2xs': 'var(--shadow-2xs)',

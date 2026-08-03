@@ -10,8 +10,11 @@ import { DealForm } from "@/components/DealForm";
 import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, LayoutGrid, List } from "lucide-react";
+import { Plus, LayoutGrid, List, Archive } from "lucide-react";
 import { useCRUDAudit } from "@/hooks/useCRUDAudit";
+import { usePermissions } from "@/contexts/PermissionsContext";
+import { ArchivedDealsDialog } from "@/components/deals/ArchivedDealsDialog";
+import { AppLoader } from "@/components/ui/loader";
 
 const DealsPage = () => {
   const { user, loading: authLoading } = useAuth();
@@ -23,6 +26,8 @@ const DealsPage = () => {
   // URL params for highlight from notifications
   const [searchParams, setSearchParams] = useSearchParams();
   const highlightId = searchParams.get('highlight');
+  const fixFields = searchParams.get('fix');
+  const [highlightFields, setHighlightFields] = useState<string[]>([]);
   const [highlightProcessed, setHighlightProcessed] = useState(false);
   
   const [selectedDeal, setSelectedDeal] = useState<Deal | null>(null);
@@ -30,6 +35,8 @@ const DealsPage = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [initialStage, setInitialStage] = useState<DealStage>('Lead');
   const [activeView, setActiveView] = useState<'kanban' | 'list'>('kanban');
+  const { userRole } = usePermissions();
+  const [archiveOpen, setArchiveOpen] = useState(false);
 
   // Initial fetch is capped to KANBAN_LIMIT most-recent deals so first paint is fast.
   // The "Load all" button below pulls the rest in 1000-row batches when needed
@@ -47,6 +54,7 @@ const DealsPage = () => {
         const { data, error } = await supabase
           .from('deals')
           .select('*')
+          .is('archived_at', null)
           .order('modified_at', { ascending: false })
           .range(0, KANBAN_LIMIT - 1);
         if (error) throw error;
@@ -61,6 +69,7 @@ const DealsPage = () => {
         const { data, error } = await supabase
           .from('deals')
           .select('*')
+          .is('archived_at', null)
           .order('modified_at', { ascending: false })
           .range(from, from + PAGE - 1);
         if (error) throw error;
@@ -91,9 +100,6 @@ const DealsPage = () => {
 
   const handleUpdateDeal = async (dealId: string, updates: Partial<Deal>) => {
     try {
-      console.log("=== HANDLE UPDATE DEAL DEBUG ===");
-      console.log("Deal ID:", dealId);
-      console.log("Updates:", updates);
       
       // Get the existing deal for audit logging
       const existingDeal = deals.find(deal => deal.id === dealId);
@@ -105,11 +111,10 @@ const DealsPage = () => {
         modified_by: user?.id
       };
 
-      console.log("Final update data:", updateData);
 
       const { data, error } = await supabase
         .from('deals')
-        .update(updateData)
+        .update(updateData as any)
         .eq('id', dealId)
         .select()
         .single();
@@ -119,7 +124,6 @@ const DealsPage = () => {
         throw error;
       }
 
-      console.log("Update successful, data:", data);
       
       // Log update operation
       await logUpdate('deals', dealId, updates, existingDeal);
@@ -128,11 +132,7 @@ const DealsPage = () => {
       setDeals(prev => prev.map(deal => 
         deal.id === dealId ? { ...deal, ...updateData } : deal
       ));
-      
-      toast({
-        title: "Success",
-        description: "Deal updated successfully",
-      });
+
     } catch (error: any) {
       console.error("Update deal error:", error);
       toast({
@@ -146,9 +146,6 @@ const DealsPage = () => {
 
   const handleSaveDeal = async (dealData: Partial<Deal>) => {
     try {
-      console.log("=== SAVE DEAL DEBUG ===");
-      console.log("Is creating:", isCreating);
-      console.log("Deal data:", dealData);
       
       if (isCreating) {
         const insertData = { 
@@ -160,11 +157,10 @@ const DealsPage = () => {
           modified_at: new Date().toISOString()
         };
         
-        console.log("Insert data:", insertData);
 
         const { data, error } = await supabase
           .from('deals')
-          .insert([insertData])
+          .insert([insertData] as any)
           .select()
           .single();
 
@@ -187,7 +183,6 @@ const DealsPage = () => {
           throw error;
         }
 
-        console.log("Insert successful:", data);
 
         // Log create operation
         await logCreate('deals', data.id, dealData);
@@ -201,7 +196,6 @@ const DealsPage = () => {
           modified_by: user?.id
         };
         
-        console.log("Update data for existing deal:", updateData);
         
         await handleUpdateDeal(selectedDeal.id, updateData);
         await fetchDeals();
@@ -214,88 +208,66 @@ const DealsPage = () => {
 
   const handleDeleteDeals = async (dealIds: string[]) => {
     try {
-      console.log("Attempting to delete deals:", dealIds);
-
-      // Request the IDs of the rows that were actually deleted (RLS will filter)
-      const { data, error } = await supabase
-        .from('deals')
-        .delete()
-        .in('id', dealIds)
-        .select('id');
+      // Archiving runs through a server-side function: it validates the caller
+      // (admin/super admin can archive any deal, everyone else only their own)
+      // and returns the ids it archived, so we never need to read archived rows
+      // back (viewing the archive stays super-admin only).
+      const { data, error } = await (supabase as any).rpc('archive_deals', {
+        p_ids: dealIds,
+        p_reason: null,
+      });
 
       if (error) {
-        console.error("Delete error:", error);
+        console.error("Archive error:", error, JSON.stringify(error));
         toast({
           title: "Error",
-          description: "Failed to delete deals",
+          description: error.message || "Failed to archive deals",
           variant: "destructive",
         });
         return;
       }
 
-      const deletedIds = (data || []).map((row: { id: string }) => row.id);
-      const notDeleted = dealIds.filter(id => !deletedIds.includes(id));
+      const archivedIds: string[] = ((data as { id: string }[] | null) || []).map(r => r.id);
+      const notArchived = dealIds.filter(id => !archivedIds.includes(id));
 
-      console.log("Deleted IDs:", deletedIds);
-      console.log("Not deleted due to RLS/permissions:", notDeleted);
+      if (archivedIds.length > 0) {
+        const archivedDeals = deals.filter(d => archivedIds.includes(d.id));
+        setDeals(prev => prev.filter(deal => !archivedIds.includes(deal.id)));
 
-      // Update local state only for deals that were actually deleted
-      if (deletedIds.length > 0) {
-        setDeals(prev => prev.filter(deal => !deletedIds.includes(deal.id)));
-
-        // Log delete with appropriate method
-        if (deletedIds.length === 1) {
-          const deletedDeal = deals.find(d => d.id === deletedIds[0]);
-          await logDelete('deals', deletedIds[0], deletedDeal);
+        if (archivedIds.length === 1) {
+          await logDelete('deals', archivedIds[0], archivedDeals[0]);
         } else {
-          await logBulkDelete('deals', deletedIds.length, deletedIds);
+          await logBulkDelete('deals', archivedIds.length, archivedIds);
         }
 
         toast({
-          title: "Success",
-          description: `Deleted ${deletedIds.length} deal(s)`,
+          title: "Moved to Archive",
+          description: `${archivedIds.length} deal(s) archived. A super admin can restore or permanently delete them.`,
         });
       }
 
-      // For IDs that weren't deleted, check if they actually exist in DB
-      if (notDeleted.length > 0) {
-        const { data: existing } = await supabase
-          .from('deals')
-          .select('id')
-          .in('id', notDeleted);
-
-        const existingIds = (existing || []).map((r: { id: string }) => r.id);
-        const ghostIds = notDeleted.filter(id => !existingIds.includes(id));
-
-        // Remove ghost entries from local state silently
-        if (ghostIds.length > 0) {
-          setDeals(prev => prev.filter(deal => !ghostIds.includes(deal.id)));
-        }
-
-        // Only show permission error for deals that actually exist but couldn't be deleted
-        const reallyDenied = existingIds.length;
-        if (reallyDenied > 0) {
-          toast({
-            title: "Permission Denied",
-            description: `You don't have permission to delete ${reallyDenied} deal(s).`,
-            variant: "destructive",
-          });
-        }
+      if (notArchived.length > 0) {
+        toast({
+          title: "Permission Denied",
+          description: `You don't have permission to archive ${notArchived.length} deal(s).`,
+          variant: "destructive",
+        });
       }
-    } catch (error) {
-      console.error("Unexpected delete error:", error);
+    } catch (error: any) {
+      console.error("Unexpected archive error:", error);
       toast({
         title: "Error",
-        description: "Failed to delete deals",
+        description: error?.message || "Failed to archive deals",
         variant: "destructive",
       });
     }
   };
 
+
+
   const handleImportDeals = async (importedDeals: (Partial<Deal> & { shouldUpdate?: boolean })[]) => {
     // This function is kept for compatibility but the actual import logic is now handled
     // by the simplified CSV processor in useDealsImportExport hook
-    console.log('handleImportDeals called with:', importedDeals.length, 'deals');
     // Refresh data after import
     await fetchDeals();
   };
@@ -317,6 +289,7 @@ const DealsPage = () => {
     setIsFormOpen(false);
     setSelectedDeal(null);
     setIsCreating(false);
+    setHighlightFields([]);
   };
 
   useEffect(() => {
@@ -332,6 +305,7 @@ const DealsPage = () => {
       if (deal) {
         setSelectedDeal(deal);
         setIsCreating(false);
+        setHighlightFields(fixFields ? fixFields.split(',').filter(Boolean) : []);
         setIsFormOpen(true);
       } else {
         toast({
@@ -342,7 +316,7 @@ const DealsPage = () => {
       setSearchParams({}, { replace: true });
       setHighlightProcessed(true);
     }
-  }, [highlightId, deals, loading, highlightProcessed, setSearchParams, toast]);
+  }, [highlightId, fixFields, deals, loading, highlightProcessed, setSearchParams, toast]);
 
   // Reset processed state when highlightId changes
   useEffect(() => {
@@ -367,15 +341,33 @@ const DealsPage = () => {
             { event: '*', schema: 'public', table: 'deals' },
             (payload) => {
               if (payload.eventType === 'INSERT') {
-                setDeals(prev => [payload.new as Deal, ...prev]);
+                if ((payload.new as any)?.archived_at) return;
+                setDeals(prev =>
+                  prev.some(d => d.id === (payload.new as Deal).id)
+                    ? prev
+                    : [payload.new as Deal, ...prev]
+                );
               } else if (payload.eventType === 'UPDATE') {
-                setDeals(prev => prev.map(deal =>
-                  deal.id === payload.new.id ? { ...deal, ...payload.new } as Deal : deal
-                ));
+                // Archived deals leave the active pipeline (super admins see
+                // them in the Archive dialog instead).
+                if ((payload.new as any)?.archived_at) {
+                  setDeals(prev => prev.filter(deal => deal.id !== payload.new.id));
+                  return;
+                }
+                setDeals(prev => {
+                  const exists = prev.some(d => d.id === payload.new.id);
+                  return exists
+                    ? prev.map(deal =>
+                        deal.id === payload.new.id ? { ...deal, ...payload.new } as Deal : deal
+                      )
+                    : [payload.new as Deal, ...prev];
+                });
               } else if (payload.eventType === 'DELETE') {
+
                 setDeals(prev => prev.filter(deal => deal.id !== payload.old.id));
               }
             }
+
           )
           .subscribe();
       };
@@ -416,14 +408,7 @@ const DealsPage = () => {
   }, [user, fetchDeals, setDeals]);
 
   if (authLoading || loading) {
-    return (
-      <div className="h-screen flex items-center justify-center bg-background">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
-          <p className="text-muted-foreground">Loading...</p>
-        </div>
-      </div>
-    );
+    return <AppLoader variant="page" label="Loading deals…" />;
   }
 
   if (!user) {
@@ -443,24 +428,16 @@ const DealsPage = () => {
           aria-label="Kanban view"
           className="px-3 h-8 text-sm data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:shadow-sm rounded-md"
         >
-          <LayoutGrid className="h-4 w-4 mr-1" />
-          Kanban
+          <LayoutGrid className="h-4 w-4" />
         </ToggleGroupItem>
         <ToggleGroupItem
           value="list"
           aria-label="List view"
           className="px-3 h-8 text-sm data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:shadow-sm rounded-md"
         >
-          <List className="h-4 w-4 mr-1" />
-          List
+          <List className="h-4 w-4" />
         </ToggleGroupItem>
       </ToggleGroup>
-
-      {hasMore && activeView === 'kanban' && (
-        <Button variant="outline" size="sm" onClick={() => setLoadAll(true)}>
-          Load all deals
-        </Button>
-      )}
 
       <Button onClick={() => handleCreateDeal('Lead')}>
         <Plus className="w-4 h-4 mr-2" />
@@ -483,6 +460,10 @@ const DealsPage = () => {
             onImportDeals={handleImportDeals}
             onRefresh={fetchDeals}
             headerActions={headerActions}
+            onOpenArchive={() => setArchiveOpen(true)}
+            canArchive={userRole === 'super_admin'}
+            onLoadAll={() => setLoadAll(true)}
+            hasMore={hasMore}
           />
         ) : (
           <ListView
@@ -505,12 +486,15 @@ const DealsPage = () => {
         onRefresh={fetchDeals}
         isCreating={isCreating}
         initialStage={initialStage}
+        highlightFields={highlightFields}
          onDelete={(dealId) => {
            handleDeleteDeals([dealId]);
            setIsFormOpen(false);
            setSelectedDeal(null);
          }}
       />
+
+      <ArchivedDealsDialog open={archiveOpen} onOpenChange={setArchiveOpen} />
     </div>
   );
 };

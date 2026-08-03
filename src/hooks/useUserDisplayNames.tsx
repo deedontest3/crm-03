@@ -19,7 +19,7 @@ async function fetchDisplayNamesForIds(ids: string[]): Promise<Record<string, st
       // Direct query to profiles table — much faster than the edge function
       // which calls auth.admin.listUsers() (returns ALL users every time).
       const { data: profilesData } = await supabase
-        .from('profiles')
+        .from('profiles_public' as any)
         .select('id, full_name, "Email ID"')
         .in('id', ids);
       profilesData?.forEach((profile: any) => {
@@ -125,7 +125,7 @@ const fetchAllUsers = async (): Promise<AllUser[]> => {
   } catch (error) {
     console.error('useAllUsers: Error fetching users, falling back to profiles:', error);
     const { data, error: profilesError } = await supabase
-      .from('profiles')
+      .from('profiles_public' as any)
       .select('id, full_name, "Email ID"')
       .order('full_name', { ascending: true });
 

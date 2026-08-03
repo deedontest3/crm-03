@@ -52,25 +52,29 @@ serve(async (req) => {
 
     console.log('Authenticated request by:', user.user.email);
 
-    // Check user's role from both metadata and database
-    const userRole = user.user.user_metadata?.role || 'user';
+    // Determine the caller's role STRICTLY from the user_roles table. We must
+    // NOT fall back to user.user_metadata.role: user_metadata is writable by
+    // the user themselves via auth.updateUser({ data }), so trusting it here
+    // allowed any user whose user_roles row was missing to self-escalate to
+    // super_admin. Every other authorization helper in this codebase
+    // (is_user_admin / get_user_role / has_role) reads user_roles only.
     const { data: userRoleFromDB } = await supabaseAdmin
       .from('user_roles')
       .select('role')
       .eq('user_id', user.user.id)
       .single();
 
-    const effectiveRole = userRoleFromDB?.role || userRole;
-    const isAdmin = effectiveRole === 'admin';
+    const effectiveRole = userRoleFromDB?.role || 'user';
+    const isSuperAdmin = effectiveRole === 'super_admin';
+    const isAdmin = effectiveRole === 'admin' || isSuperAdmin;
 
-    console.log('User role from metadata:', userRole);
     console.log('User role from database:', userRoleFromDB?.role || 'no role found');
-    console.log('Effective role:', effectiveRole, 'isAdmin:', isAdmin);
+    console.log('Effective role:', effectiveRole, 'isAdmin:', isAdmin, 'isSuperAdmin:', isSuperAdmin);
 
-    // GET - List all users (allow all authenticated users to view)
+    // GET - List all users (authenticated users see a safe projection only)
     if (req.method === 'GET') {
       console.log('Fetching users list...');
-      
+
       const { data, error } = await supabaseAdmin.auth.admin.listUsers();
 
       if (error) {
@@ -81,15 +85,34 @@ serve(async (req) => {
         );
       }
 
-      console.log('Users fetched successfully:', data?.users?.length || 0);
+      // Project to safe fields only. Non-admins must NOT see other users' PII
+      // (phone, app_metadata, identities, raw user_metadata, etc.).
+      const safeUsers = (data?.users || []).map((u: any) => {
+        const base = {
+          id: u.id,
+          email: isAdmin ? u.email : undefined,
+          created_at: u.created_at,
+          last_sign_in_at: isAdmin ? u.last_sign_in_at : undefined,
+          banned_until: isAdmin ? u.banned_until : undefined,
+          user_metadata: {
+            full_name: u.user_metadata?.full_name ?? null,
+            // role intentionally omitted — authoritative role lives in user_roles
+          },
+        };
+        // Strip undefined keys so non-admins don't see masked-out fields at all
+        return Object.fromEntries(Object.entries(base).filter(([, v]) => v !== undefined));
+      });
+
+      console.log('Users fetched successfully:', safeUsers.length, 'isAdmin:', isAdmin);
       return new Response(
-        JSON.stringify({ users: data.users }),
-        { 
-          status: 200, 
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        JSON.stringify({ users: safeUsers }),
+        {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         }
       );
     }
+
 
     // POST - Create new user or handle specific actions
     if (req.method === 'POST') {
@@ -142,74 +165,81 @@ serve(async (req) => {
         );
       }
 
-      // Handle role changes (ADMIN ONLY)
+      // Handle role changes (SUPER ADMIN ONLY)
       if (body.action === 'change-role') {
-        if (!isAdmin) {
-          console.log('Non-admin user attempted role change:', user.user.email, 'for user:', body.userId);
+        if (!isSuperAdmin) {
+          console.log('Non-super-admin attempted role change:', user.user.email, 'for user:', body.userId);
           return new Response(
-            JSON.stringify({ error: 'Only Admins can change user roles' }),
+            JSON.stringify({ error: 'Only Super Admins can change user roles' }),
             { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
           );
         }
 
         const { userId, newRole } = body;
-        if (!userId || !newRole || !['admin', 'user'].includes(newRole)) {
+        const allowedRoles = ['super_admin', 'admin', 'sales_head', 'user'];
+        if (!userId || !newRole || !allowedRoles.includes(newRole)) {
           return new Response(
-            JSON.stringify({ error: 'Valid user ID and role (admin/user) are required' }),
+            JSON.stringify({ error: `Valid user ID and role (${allowedRoles.join('/')}) are required` }),
             { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
           );
         }
 
-        console.log('Admin changing role for user:', userId, 'to:', newRole, 'by:', user.user.email);
+        // Prevent demoting the last super admin
+        if (newRole !== 'super_admin') {
+          const { data: target } = await supabaseAdmin
+            .from('user_roles')
+            .select('role')
+            .eq('user_id', userId)
+            .maybeSingle();
+          if (target?.role === 'super_admin') {
+            const { count } = await supabaseAdmin
+              .from('user_roles')
+              .select('user_id', { count: 'exact', head: true })
+              .eq('role', 'super_admin');
+            if ((count || 0) <= 1) {
+              return new Response(
+                JSON.stringify({ error: 'Cannot demote the last Super Admin. Promote another user first.' }),
+                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+              );
+            }
+          }
+        }
+
+        console.log('Super admin changing role for user:', userId, 'to:', newRole, 'by:', user.user.email);
 
         try {
-          // First, update the user metadata in Supabase Auth
-          const { data: updatedUser, error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
-            userId,
-            { 
-              user_metadata: { 
-                role: newRole 
-              } 
-            }
-          );
+          // Do NOT mirror the role into auth.user_metadata: that field is
+          // client-writable and used to be a privilege-escalation vector.
+          // The authoritative role lives in public.user_roles only.
+          const { data: updatedUser } = await supabaseAdmin.auth.admin.getUserById(userId);
 
-          if (updateError) {
-            console.error('Error updating user metadata:', updateError);
-            return new Response(
-              JSON.stringify({ error: `Failed to update user metadata: ${updateError.message}` }),
-              { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-            );
-          }
 
-          // Then, use our upsert function to update the role in the database
           const { error: roleError } = await supabaseAdmin.rpc('update_user_role', {
             p_user_id: userId,
-            p_role: newRole
+            p_role: newRole,
           });
-
           if (roleError) {
-            console.error('Error updating role in database:', roleError);
             return new Response(
               JSON.stringify({ error: `Role update failed: ${roleError.message}` }),
               { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
             );
           }
 
-          console.log('Role updated successfully in both auth and database by admin:', user.user.email);
+          // Server-side audit log
+          await supabaseAdmin.from('security_audit_log').insert({
+            user_id: user.user.id,
+            action: 'ROLE_CHANGE',
+            resource_type: 'user_roles',
+            resource_id: userId,
+            metadata: { new_role: newRole, changed_by_email: user.user.email },
+          });
+
           return new Response(
-            JSON.stringify({ 
-              success: true,
-              message: `User role updated to ${newRole}`,
-              user: updatedUser.user
-            }),
-            { 
-              status: 200, 
-              headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-            }
+            JSON.stringify({ success: true, message: `User role updated to ${newRole}`, user: updatedUser.user }),
+            { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
           );
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          console.error('Error in change-role:', error);
           return new Response(
             JSON.stringify({ error: `Role update failed: ${errorMessage}` }),
             { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -227,7 +257,7 @@ serve(async (req) => {
       }
 
       const { email, displayName, role, password } = body;
-      
+
       if (!email || !password || !displayName) {
         return new Response(
           JSON.stringify({ error: 'Email, password, and display name are required' }),
@@ -235,7 +265,27 @@ serve(async (req) => {
         );
       }
 
-      console.log('Admin creating user:', email, 'with role:', role || 'user');
+      // Validate the requested role and prevent privilege escalation: the role
+      // is a client-supplied value, so a plain admin must not be able to mint a
+      // super_admin/admin account (only super admins can — matching the
+      // change-role handler above).
+      const requestedRole = role || 'user';
+      const allowedNewRoles = ['super_admin', 'admin', 'sales_head', 'user'];
+      if (!allowedNewRoles.includes(requestedRole)) {
+        return new Response(
+          JSON.stringify({ error: 'Invalid role' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+      if ((requestedRole === 'super_admin' || requestedRole === 'admin') && !isSuperAdmin) {
+        console.log('Non-super-admin attempted to create elevated user:', user.user.email, 'role:', requestedRole);
+        return new Response(
+          JSON.stringify({ error: 'Only Super Admins can create admin or super admin accounts' }),
+          { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      console.log('Admin creating user:', email, 'with role:', requestedRole);
 
       const { data, error } = await supabaseAdmin.auth.admin.createUser({
         email,
@@ -277,14 +327,14 @@ serve(async (req) => {
             .from('user_roles')
             .insert({
               user_id: data.user.id,
-              role: role || 'user',
+              role: requestedRole,
               assigned_by: user.user.id
             });
 
           if (roleError) {
             console.warn('Role assignment failed:', roleError);
           } else {
-            console.log('Role assigned successfully:', role || 'user');
+            console.log('Role assigned successfully:', requestedRole);
           }
 
         } catch (err) {
@@ -326,6 +376,17 @@ serve(async (req) => {
             { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
           );
         }
+      }
+
+      // A plain displayName update may only target the caller's own account
+      // unless the caller is an admin. Previously any authenticated user could
+      // rename any other user by passing an arbitrary userId.
+      if (displayName !== undefined && userId !== user.user.id && !isAdmin) {
+        console.log('Non-admin user attempted to update another user profile:', user.user.email, '->', userId);
+        return new Response(
+          JSON.stringify({ error: 'You can only update your own profile' }),
+          { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
       }
 
       console.log('Updating user:', userId, 'action:', action, 'displayName:', displayName);
@@ -396,18 +457,22 @@ serve(async (req) => {
       );
     }
 
-    // DELETE - Delete user (admin only)
+    // DELETE - Delete user (super admin only) – tombstone approach.
+    // We KEEP the profiles row (flagged is_deleted) so historical references
+    // (created_by, modified_by, assigned_to, contact_owner, sent_by, …) on
+    // deals / leads / contacts / campaigns / action_items / email_history /
+    // notifications continue to resolve to the original user's name.
     if (req.method === 'DELETE') {
-      if (!isAdmin) {
-        console.log('Non-admin user attempted user deletion:', user.user.email);
+      if (!isSuperAdmin) {
+        console.log('Non-super-admin attempted user deletion:', user.user.email);
         return new Response(
-          JSON.stringify({ error: 'Only Admins can delete users' }),
+          JSON.stringify({ error: 'Only Super Admins can delete users' }),
           { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
 
       const { userId } = await req.json();
-      
+
       if (!userId) {
         return new Response(
           JSON.stringify({ error: 'User ID is required for deletion' }),
@@ -415,234 +480,156 @@ serve(async (req) => {
         );
       }
 
-      console.log('Admin deleting user:', userId);
-
-      // Prevent self-deletion: it will always violate FKs like deals_created_by_fkey
-      // because we cannot reassign records away from a user that is simultaneously
-      // the deleter (and is about to be removed from auth.users).
       if (userId === user.user.id) {
-        console.log('Blocked self-deletion attempt by admin:', user.user.email);
         return new Response(
-          JSON.stringify({
-            error: 'Admins cannot delete their own account. Please sign in as a different admin to delete this user.'
-          }),
+          JSON.stringify({ error: 'You cannot delete your own account. Ask another Super Admin to do it.' }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
 
-      try {
-        // First, handle all dependent records to avoid foreign key violations
-        
-        // 1. Delete or reassign deal action items
-        const { error: dealActionError } = await supabaseAdmin
-          .from('deal_action_items')
-          .delete()
-          .or(`created_by.eq.${userId},assigned_to.eq.${userId}`);
-        
-        if (dealActionError) {
-          console.warn('Error deleting deal action items:', dealActionError);
-        }
-
-        // 2. Delete or reassign lead action items
-        const { error: leadActionError } = await supabaseAdmin
-          .from('lead_action_items')
-          .delete()
-          .or(`created_by.eq.${userId},assigned_to.eq.${userId}`);
-        
-        if (leadActionError) {
-          console.warn('Error deleting lead action items:', leadActionError);
-        }
-
-        // 3. Clear user references in deals (set to null where possible, or reassign to admin)
-        const { error: dealsCreatedByError } = await supabaseAdmin
-          .from('deals')
-          .update({ created_by: user.user.id }) // Reassign to the admin performing the deletion
-          .eq('created_by', userId);
-        
-        if (dealsCreatedByError) {
-          console.warn('Error updating deals created_by:', dealsCreatedByError);
-        }
-
-        const { error: dealsModifiedByError } = await supabaseAdmin
-          .from('deals')
-          .update({ modified_by: null })
-          .eq('modified_by', userId);
-        
-        if (dealsModifiedByError) {
-          console.warn('Error updating deals modified_by:', dealsModifiedByError);
-        }
-
-        // 4. Clear user references in leads
-        const { error: leadsCreatedByError } = await supabaseAdmin
-          .from('leads')
-          .update({ created_by: user.user.id })
-          .eq('created_by', userId);
-        
-        if (leadsCreatedByError) {
-          console.warn('Error updating leads created_by:', leadsCreatedByError);
-        }
-
-        const { error: leadsModifiedByError } = await supabaseAdmin
-          .from('leads')
-          .update({ modified_by: null })
-          .eq('modified_by', userId);
-        
-        if (leadsModifiedByError) {
-          console.warn('Error updating leads modified_by:', leadsModifiedByError);
-        }
-
-        const { error: leadsOwnerError } = await supabaseAdmin
-          .from('leads')
-          .update({ contact_owner: null })
-          .eq('contact_owner', userId);
-        
-        if (leadsOwnerError) {
-          console.warn('Error updating leads contact_owner:', leadsOwnerError);
-        }
-
-        // 5. Clear user references in contacts
-        const { error: contactsCreatedByError } = await supabaseAdmin
-          .from('contacts')
-          .update({ created_by: user.user.id })
-          .eq('created_by', userId);
-        
-        if (contactsCreatedByError) {
-          console.warn('Error updating contacts created_by:', contactsCreatedByError);
-        }
-
-        const { error: contactsModifiedByError } = await supabaseAdmin
-          .from('contacts')
-          .update({ modified_by: null })
-          .eq('modified_by', userId);
-        
-        if (contactsModifiedByError) {
-          console.warn('Error updating contacts modified_by:', contactsModifiedByError);
-        }
-
-        const { error: contactsOwnerError } = await supabaseAdmin
-          .from('contacts')
-          .update({ contact_owner: null })
-          .eq('contact_owner', userId);
-        
-        if (contactsOwnerError) {
-          console.warn('Error updating contacts contact_owner:', contactsOwnerError);
-        }
-
-        // 6. Delete notifications for the user
-        const { error: notificationsError } = await supabaseAdmin
-          .from('notifications')
-          .delete()
-          .eq('user_id', userId);
-        
-        if (notificationsError) {
-          console.warn('Error deleting notifications:', notificationsError);
-        }
-
-        // 7. Delete saved filters
-        const { error: filtersError } = await supabaseAdmin
-          .from('saved_filters')
-          .delete()
-          .eq('user_id', userId);
-        
-        if (filtersError) {
-          console.warn('Error deleting saved filters:', filtersError);
-        }
-
-        // 8. Delete dashboard preferences
-        const { error: dashPrefError } = await supabaseAdmin
-          .from('dashboard_preferences')
-          .delete()
-          .eq('user_id', userId);
-        
-        if (dashPrefError) {
-          console.warn('Error deleting dashboard preferences:', dashPrefError);
-        }
-
-        // 9. Delete user preferences
-        const { error: userPrefError } = await supabaseAdmin
-          .from('user_preferences')
-          .delete()
-          .eq('user_id', userId);
-        
-        if (userPrefError) {
-          console.warn('Error deleting user preferences:', userPrefError);
-        }
-
-        // 10. Delete user role
-        const { error: roleDeleteError } = await supabaseAdmin
+      // Prevent removing the last super admin
+      const { data: targetRole } = await supabaseAdmin
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (targetRole?.role === 'super_admin') {
+        const { count } = await supabaseAdmin
           .from('user_roles')
-          .delete()
-          .eq('user_id', userId);
-        
-        if (roleDeleteError) {
-          console.warn('Error deleting user role:', roleDeleteError);
-        }
-
-        // 10b. Reassign "assigned_by" references (FK to auth.users)
-        // If the deleted user assigned roles to others, we must detach that reference.
-        const { error: roleAssignedByUpdateError } = await supabaseAdmin
-          .from('user_roles')
-          .update({ assigned_by: user.user.id })
-          .eq('assigned_by', userId);
-
-        if (roleAssignedByUpdateError) {
-          console.warn('Error updating user_roles assigned_by:', roleAssignedByUpdateError);
-        }
-
-        // 10c. Reassign revenue target creator references (FK to auth.users)
-        const { error: revenueTargetsUpdateError } = await supabaseAdmin
-          .from('yearly_revenue_targets')
-          .update({ created_by: user.user.id })
-          .eq('created_by', userId);
-
-        if (revenueTargetsUpdateError) {
-          console.warn('Error updating yearly_revenue_targets created_by:', revenueTargetsUpdateError);
-        }
-
-        // 11. Delete profile
-        const { error: profileDeleteError } = await supabaseAdmin
-          .from('profiles')
-          .delete()
-          .eq('id', userId);
-        
-        if (profileDeleteError) {
-          console.warn('Error deleting profile:', profileDeleteError);
-        }
-
-        console.log('Cleaned up related records, now deleting auth user');
-
-        // Finally, delete the auth user
-        const { error: authDeleteError } = await supabaseAdmin.auth.admin.deleteUser(userId);
-
-        if (authDeleteError) {
-          console.error('Error deleting auth user:', authDeleteError);
+          .select('user_id', { count: 'exact', head: true })
+          .eq('role', 'super_admin');
+        if ((count || 0) <= 1) {
           return new Response(
-            JSON.stringify({ 
-              error: `User deletion failed: ${authDeleteError.message}` 
+            JSON.stringify({ error: 'Cannot delete the last Super Admin. Promote another user first.' }),
+            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+      }
+
+      // Snapshot profile name/email BEFORE we touch anything else
+      const { data: targetProfile } = await supabaseAdmin
+        .from('profiles')
+        .select('id, full_name, "Email ID", is_deleted')
+        .eq('id', userId)
+        .maybeSingle();
+
+      const alreadyTombstoned = !!targetProfile?.is_deleted;
+
+      // If profile is already tombstoned, just retry the auth deletion (idempotent).
+      if (alreadyTombstoned) {
+        console.log('Profile already tombstoned, retrying auth deletion for:', userId);
+        const { error: authDeleteError } = await supabaseAdmin.auth.admin.deleteUser(userId);
+        if (authDeleteError) {
+          console.error('Auth deletion retry failed:', authDeleteError);
+          return new Response(
+            JSON.stringify({
+              success: true,
+              warning: `Profile is archived. Auth account removal still failing: ${authDeleteError.message}`,
+              userId,
             }),
+            { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(
+          JSON.stringify({ success: true, message: 'Auth account removed. Historical records preserved.', userId }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      console.log('Super admin tombstoning user:', userId, 'by', user.user.email);
+
+      try {
+        // 1) Purge ONLY personal / preference data.
+        //    Everything else (deals, leads, contacts, campaigns, action_items,
+        //    email_history, audit log, etc.) is preserved so created_by /
+        //    modified_by / assigned_to keep pointing at the tombstoned profile.
+        const purgeTables = [
+          'notifications',
+          'notification_preferences',
+          'saved_filters',
+          'dashboard_preferences',
+          'column_preferences',
+          'user_preferences',
+          'user_sessions',
+          'user_roles',
+        ];
+        const purged: Record<string, number | string> = {};
+        for (const table of purgeTables) {
+          const { error, count } = await supabaseAdmin
+            .from(table)
+            .delete({ count: 'exact' })
+            .eq('user_id', userId);
+          if (error) {
+            console.warn(`Purge ${table} failed:`, error.message);
+            purged[table] = `error: ${error.message}`;
+          } else {
+            purged[table] = count ?? 0;
+          }
+        }
+
+        // 2) Tombstone the profile (keep id, full_name, email so history resolves).
+        const { error: tombstoneError } = await supabaseAdmin
+          .from('profiles')
+          .update({
+            is_deleted: true,
+            deleted_at: new Date().toISOString(),
+            deleted_by: user.user.id,
+            deleted_email: targetProfile?.['Email ID'] ?? null,
+          })
+          .eq('id', userId);
+
+        if (tombstoneError) {
+          console.error('Failed to tombstone profile:', tombstoneError);
+          return new Response(
+            JSON.stringify({ error: `Failed to mark profile as deleted: ${tombstoneError.message}` }),
             { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
           );
         }
 
-        console.log('User deleted successfully by admin:', user.user.email);
-        return new Response(
-          JSON.stringify({ 
-            success: true, 
-            message: 'User deleted successfully',
-            userId: userId 
-          }),
-          { 
-            status: 200, 
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-          }
-        );
+        // 3) Audit log
+        await supabaseAdmin.from('security_audit_log').insert({
+          user_id: user.user.id,
+          action: 'USER_DELETED',
+          resource_type: 'users',
+          resource_id: userId,
+          metadata: {
+            deleted_email: targetProfile?.['Email ID'],
+            deleted_full_name: targetProfile?.full_name,
+            performed_by_email: user.user.email,
+            purged,
+          },
+        });
 
+        // 4) Finally remove the auth account so the user can no longer sign in.
+        const { error: authDeleteError } = await supabaseAdmin.auth.admin.deleteUser(userId);
+        if (authDeleteError) {
+          // Profile is already tombstoned; surface a warning but don't fail.
+          console.error('Auth deletion failed after tombstone:', authDeleteError);
+          return new Response(
+            JSON.stringify({
+              success: true,
+              warning: `Profile archived but auth deletion failed: ${authDeleteError.message}`,
+              userId,
+              purged,
+            }),
+            { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        console.log('User tombstoned + auth-deleted successfully:', userId);
+        return new Response(
+          JSON.stringify({
+            success: true,
+            message: 'User deleted. Historical records remain attributed to this user.',
+            userId,
+            purged,
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
       } catch (deleteError: any) {
         console.error('Unexpected error during user deletion:', deleteError);
         return new Response(
-          JSON.stringify({ 
-            error: `Deletion failed: ${deleteError.message || 'Unknown error'}` 
-          }),
+          JSON.stringify({ error: `Deletion failed: ${deleteError.message || 'Unknown error'}` }),
           { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }

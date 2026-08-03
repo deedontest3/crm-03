@@ -30,6 +30,23 @@ const CONDITIONS = [
 ] as const;
 
 /**
+ * Add N business days (Mon–Fri) to a timestamp. The backend runner skips
+ * weekends when honouring `wait_business_days`, so the displayed next-fire ETA
+ * needs to match — otherwise the UI can lie by up to two days.
+ */
+function addBusinessDaysMs(fromMs: number, days: number): number {
+  if (!Number.isFinite(days) || days <= 0) return fromMs;
+  const d = new Date(fromMs);
+  let remaining = Math.floor(days);
+  while (remaining > 0) {
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay(); // 0 = Sun, 6 = Sat
+    if (dow !== 0 && dow !== 6) remaining--;
+  }
+  return d.getTime();
+}
+
+/**
  * Returns true if `today` falls within the campaign's start/end date range.
  */
 export function isWithinActiveWindow(campaign: Campaign): boolean {
@@ -57,8 +74,8 @@ export function CampaignTiming({ campaign, isCampaignEnded, daysRemaining, timin
   const channelOptions = useMemo(() => {
     const opts: Array<{ value: "email" | "linkedin" | "call"; label: string }> = [];
     if (enabledChannels.includes("Email")) opts.push({ value: "email", label: "Email" });
-    if (enabledChannels.includes("LinkedIn")) opts.push({ value: "linkedin", label: "LinkedIn task" });
-    if (enabledChannels.includes("Phone")) opts.push({ value: "call", label: "Call task" });
+    if (enabledChannels.includes("LinkedIn")) opts.push({ value: "linkedin", label: "LinkedIn step" });
+    if (enabledChannels.includes("Phone")) opts.push({ value: "call", label: "Call step" });
     return opts;
   }, [enabledChannels]);
   const [stepType, setStepType] = useState<string>(channelOptions[0]?.value ?? "email");
@@ -163,7 +180,7 @@ export function CampaignTiming({ campaign, isCampaignEnded, daysRemaining, timin
             if (step.condition === "no_open" && p.opened_at) return false;
             return true;
           })
-          .map((p: any) => new Date(p.communication_date).getTime() + step.wait_business_days * 86400_000);
+          .map((p: any) => addBusinessDaysMs(new Date(p.communication_date).getTime(), step.wait_business_days));
         const earliest = candidateTimes.length > 0 ? Math.min(...candidateTimes) : null;
         let nextFiresAt: string | null = null;
         if (earliest !== null) {
@@ -479,7 +496,7 @@ export function CampaignTiming({ campaign, isCampaignEnded, daysRemaining, timin
                     ? segments.find((sg: any) => sg.id === s.target_segment_id)?.segment_name
                     : null;
                   const stepLabel = (s.step_type && s.step_type !== "email")
-                    ? `${s.step_type === "linkedin" ? "LinkedIn" : "Call"} task`
+                    ? `${s.step_type === "linkedin" ? "LinkedIn" : "Call"} step`
                     : (tpl?.template_name || "(deleted template)");
                   const showChannelIcon = channelOptions.length > 1;
                   const m = (stepMetrics as any)[s.id];
@@ -503,7 +520,7 @@ export function CampaignTiming({ campaign, isCampaignEnded, daysRemaining, timin
                       {(dragProvided, snapshot) => (
                         <div
                           ref={dragProvided.innerRef}
-                          {...dragProvided.draggableProps}
+                          {...(dragProvided.draggableProps as any)}
                           className={`flex items-center gap-2 py-1 border-t border-border/60 ${
                             snapshot.isDragging ? "shadow-lg ring-1 ring-primary/40 bg-card" : ""
                           } ${!s.is_enabled ? "opacity-60" : ""}`}

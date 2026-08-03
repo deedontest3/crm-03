@@ -1,41 +1,47 @@
-import { useMemo, useCallback, useState, useEffect } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { useNavigate } from "react-router-dom";
 import {
-  BarChart3, Users, Building2, Mail, Phone, MessageSquare, TrendingUp,
-  TrendingDown, RefreshCw, ArrowRight, Send, Reply, Download, Clock,
+  BarChart3, Users, Mail, TrendingUp,
+  TrendingDown, ArrowRight, Send, Reply,
   Inbox, AlertTriangle, Info, Eye, Target, Trophy, DollarSign, Filter,
+  ChevronDown, XCircle,
 } from "lucide-react";
 import {
-  PieChart, Pie, Cell, ResponsiveContainer, Legend,
-  Tooltip as RechartsTooltip, AreaChart, Area, XAxis, YAxis, CartesianGrid,
-  BarChart, Bar,
+  PieChart, Pie, Cell, ResponsiveContainer,
+  Tooltip as RechartsTooltip, AreaChart, Area, XAxis, YAxis, CartesianGrid, Legend,
 } from "recharts";
 import { format, subDays, isAfter, startOfDay } from "date-fns";
-import { VariantPerformancePanel } from "./VariantPerformancePanel";
-import { CampaignAttributionPanel } from "./CampaignAttributionPanel";
 import { getEnabledChannels } from "./channelVisibility";
+import { computeEmailStats } from "./emailMetrics";
+
+// Drilldown shape mirrors CampaignDetail's CampaignDrilldown so the parent can
+// route us to the right tab/view/filter without us importing its types.
+export type AnalyticsDrilldown =
+  | { tab: "setup"; section: "region" | "audience" | "message" | "timing"; audienceView?: "accounts" | "contacts" }
+  | { tab: "monitoring"; view: "outreach" | "analytics"; channel?: "email" | "linkedin" | "call"; status?: "all" | "sent" | "delivered" | "opened" | "replied" | "failed" | "bounced" | "notReplied" | "needsFollowup"; threadId?: string }
+  | { tab: "actionItems" };
 
 interface Props {
   campaignId: string;
-  /** Optional — when provided, channel-aware UI is enabled. */
   campaign?: any;
+  /** Optional drilldown handler — when provided, KPIs/cards become clickable. */
+  onDrilldown?: (next: AnalyticsDrilldown) => void;
+  /** When provided, renders inline Outreach/Analytics toggle in the toolbar. */
+  viewMode?: "outreach" | "analytics";
+  onViewModeChange?: (v: "outreach" | "analytics") => void;
 }
 
 // ────────────────────────── Design tokens ──────────────────────────
 const CHART = {
-  // C12: theme-aware tokens (auto light/dark) defined in index.css
   primary:  "hsl(var(--channel-email))",
   success:  "hsl(var(--channel-success))",
   call:     "hsl(var(--channel-call))",
@@ -45,21 +51,21 @@ const CHART = {
   opened:   "hsl(var(--channel-opened))",
 } as const;
 
-const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const TIME_BUCKETS = [
-  { label: "Morning", short: "AM",  range: [6, 12] as const },
-  { label: "Midday",  short: "MD",  range: [12, 14] as const },
-  { label: "Afternoon", short: "PM", range: [14, 18] as const },
-  { label: "Evening", short: "EVE", range: [18, 24] as const },
-];
-
 type DateRange = "7" | "30" | "90" | "all";
 type ChannelFilter = "all" | "email" | "call" | "linkedin";
 
 // ────────────────────────── Helpers ──────────────────────────
+// A bounce is a hard non-delivery. We deliberately do NOT treat
+// `email_status === "Failed"` as a bounce — those are transient send failures
+// surfaced separately (see `isFailedSend`).
 const isBounce = (m: any) =>
-  m.delivery_status === "failed" ||
-  ["Bounced", "Failed"].includes(m.email_status || "");
+  m.email_status === "Bounced" ||
+  !!m.bounced_at ||
+  !!m.bounce_reason ||
+  !!m.bounce_type;
+
+const isFailedSend = (m: any) =>
+  m.email_status === "Failed" && !isBounce(m);
 
 const isProviderSent = (m: any) =>
   m.communication_type === "Email" &&
@@ -67,6 +73,8 @@ const isProviderSent = (m: any) =>
   m.delivery_status !== "received";
 
 const isInbound = (m: any) => m.delivery_status === "received";
+
+const NDR_SUBJECT = /^(undeliverable:|undelivered:|mail delivery failed|failure notice|returned mail|delivery status notification)/i;
 
 const pct = (num: number, den: number) =>
   den > 0 ? Math.min(100, Math.max(0, Math.round((num / den) * 100))) : 0;
@@ -79,40 +87,47 @@ const trendDelta = (current: number, previous: number): { delta: number; up: boo
 
 // ────────────────────────── Sub components ──────────────────────────
 function HeroKpiTile({
-  label, value, icon: Icon, accent, delta, sublabel,
+  label, value, icon: Icon, accent, delta, sublabel, onClick,
 }: {
   label: string;
   value: string | number;
   icon: any;
-  accent: "primary" | "success" | "call" | "linkedin" | "neutral";
+  accent: "primary" | "success" | "call" | "linkedin" | "neutral" | "failed";
   delta?: { delta: number; up: boolean | null };
   sublabel?: string;
+  onClick?: () => void;
 }) {
-  const accentMap: Record<string, string> = {
-    primary:  "from-primary/10 to-primary/0 text-primary",
-    success:  "from-emerald-500/10 to-emerald-500/0 text-emerald-600 dark:text-emerald-400",
-    call:     "from-amber-500/10 to-amber-500/0 text-amber-600 dark:text-amber-400",
-    linkedin: "from-violet-500/10 to-violet-500/0 text-violet-600 dark:text-violet-400",
-    neutral:  "from-slate-500/10 to-slate-500/0 text-slate-600 dark:text-slate-400",
+  const accentColor: Record<string, string> = {
+    primary:  "text-primary",
+    success:  "text-emerald-600 dark:text-emerald-400",
+    call:     "text-amber-600 dark:text-amber-400",
+    linkedin: "text-violet-600 dark:text-violet-400",
+    neutral:  "text-slate-600 dark:text-slate-400",
+    failed:   "text-rose-600 dark:text-rose-400",
   };
+  const interactive = !!onClick;
   return (
-    <Card className="border-border/60 shadow-sm overflow-hidden relative">
-      <div className={`absolute inset-0 bg-gradient-to-br ${accentMap[accent]} pointer-events-none opacity-60`} />
-      <CardContent className="p-4 relative">
-        <div className="flex items-start justify-between">
-          <div className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-muted-foreground">{label}</span>
-            <span className="text-3xl font-bold tabular-nums">{value}</span>
-            {sublabel && <span className="text-[11px] text-muted-foreground">{sublabel}</span>}
+    <Card
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive ? 0 : -1}
+      onClick={onClick}
+      onKeyDown={interactive ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick?.(); } } : undefined}
+      aria-label={interactive ? `${label}: ${value}. Open details.` : undefined}
+      className={`border-border/60 shadow-sm overflow-hidden ${interactive ? "cursor-pointer hover:bg-muted/40 hover:border-primary/40 transition-colors" : ""}`}
+    >
+      <CardContent className="p-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex flex-col gap-0.5 min-w-0">
+            <span className="text-[11px] font-medium text-muted-foreground truncate">{label}</span>
+            <span className={`text-2xl font-bold tabular-nums leading-tight ${accentColor[accent]}`}>{value}</span>
+            {sublabel && <span className="text-[10px] text-muted-foreground truncate">{sublabel}</span>}
           </div>
-          <div className={`p-2 rounded-md bg-background/80 border border-border/50`}>
-            <Icon className={`h-4 w-4 ${accentMap[accent].split(" ").pop()}`} />
-          </div>
+          <Icon className={`h-3.5 w-3.5 shrink-0 ${accentColor[accent]}`} />
         </div>
         {delta && delta.up !== null && (
-          <div className={`mt-2 inline-flex items-center gap-1 text-[11px] font-medium ${delta.up ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
-            {delta.up ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
-            {delta.delta}% vs prev period
+          <div className={`mt-1 inline-flex items-center gap-1 text-[10px] font-medium ${delta.up ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+            {delta.up ? <TrendingUp className="h-2.5 w-2.5" /> : <TrendingDown className="h-2.5 w-2.5" />}
+            {delta.delta}% vs prev
           </div>
         )}
       </CardContent>
@@ -136,7 +151,7 @@ function RateRow({ label, num, den, color, hint }: { label: string; num: number;
         </div>
         <span className="font-medium tabular-nums text-foreground">{p}% <span className="text-muted-foreground">({num}/{den})</span></span>
       </div>
-      <div className="h-2 rounded-full bg-muted overflow-hidden">
+      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
         <div className="h-full rounded-full transition-all" style={{ width: `${p}%`, background: color }} />
       </div>
     </div>
@@ -145,15 +160,11 @@ function RateRow({ label, num, den, color, hint }: { label: string; num: number;
 
 function EmptyHint({ icon: Icon, message, ctaLabel, onCta }: { icon: any; message: string; ctaLabel?: string; onCta?: () => void }) {
   return (
-    <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-      <Icon className="h-8 w-8 mb-2 opacity-50" />
+    <div className="flex flex-col items-center justify-center py-6 text-muted-foreground">
+      <Icon className="h-7 w-7 mb-2 opacity-50" />
       <p className="text-xs">{message}</p>
       {ctaLabel && onCta && (
-        <button
-          type="button"
-          onClick={onCta}
-          className="mt-3 text-xs text-primary hover:underline"
-        >
+        <button type="button" onClick={onCta} className="mt-2 text-xs text-primary hover:underline">
           {ctaLabel} →
         </button>
       )}
@@ -161,11 +172,48 @@ function EmptyHint({ icon: Icon, message, ctaLabel, onCta }: { icon: any; messag
   );
 }
 
+function CollapsibleCard({
+  title, summary, icon: Icon, defaultOpen = false, children,
+}: { title: string; summary?: string; icon: any; defaultOpen?: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <Card className="border-border/60 shadow-sm">
+      <CardHeader
+        className="p-3 cursor-pointer select-none hover:bg-muted/30 transition-colors"
+        onClick={() => setOpen(o => !o)}
+      >
+        <CardTitle className="text-sm font-medium flex items-center justify-between gap-2">
+          <span className="flex items-center gap-2 min-w-0">
+            <Icon className="h-3.5 w-3.5 text-primary shrink-0" />
+            <span className="truncate">{title}</span>
+            {summary && <span className="text-[11px] font-normal text-muted-foreground truncate">· {summary}</span>}
+          </span>
+          <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
+        </CardTitle>
+      </CardHeader>
+      {open && <CardContent className="p-3 pt-0">{children}</CardContent>}
+    </Card>
+  );
+}
+
 // ────────────────────────── Main ──────────────────────────
-export function CampaignAnalytics({ campaignId, campaign }: Props) {
+export function CampaignAnalytics({ campaignId, campaign, onDrilldown, viewMode, onViewModeChange }: Props) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [dateRange, setDateRange] = useState<DateRange>("all");
   const [channelFilter, setChannelFilter] = useState<ChannelFilter>("all");
+  const [breakdownsOpen, setBreakdownsOpen] = useState(false);
+
+  // Auto-refresh on mount so analytics is always fresh (replaces manual refresh button).
+  useEffect(() => {
+    queryClient.invalidateQueries({ queryKey: ["campaign-accounts", campaignId] });
+    queryClient.invalidateQueries({ queryKey: ["campaign-contacts", campaignId] });
+    queryClient.invalidateQueries({ queryKey: ["campaign-communications", campaignId] });
+    queryClient.invalidateQueries({ queryKey: ["campaign-deals", campaignId] });
+    queryClient.invalidateQueries({ queryKey: ["campaign-email-history", campaignId] });
+    queryClient.invalidateQueries({ queryKey: ["campaign-templates-meta", campaignId] });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campaignId]);
 
   // Channel visibility
   const enabledChannels = useMemo(() => getEnabledChannels(campaign), [campaign?.enabled_channels, campaign?.primary_channel]);
@@ -173,7 +221,6 @@ export function CampaignAnalytics({ campaignId, campaign }: Props) {
   const showCallCh = enabledChannels.includes("Phone");
   const showLinkedInCh = enabledChannels.includes("LinkedIn");
 
-  // Reset channel filter if its channel is disabled.
   useEffect(() => {
     if (channelFilter === "all") return;
     const stillEnabled =
@@ -213,7 +260,7 @@ export function CampaignAnalytics({ campaignId, campaign }: Props) {
   const { data: communications = [] } = useQuery({
     queryKey: ["campaign-communications", campaignId, "analytics"],
     queryFn: async () => {
-    const { data, error } = await supabase
+      const { data, error } = await supabase
         .from("campaign_communications")
         .select("*, opened_at, open_count, last_opened_at, tracking_id, template_id, contacts(contact_name), accounts(account_name, region, industry)")
         .eq("campaign_id", campaignId)
@@ -237,7 +284,6 @@ export function CampaignAnalytics({ campaignId, campaign }: Props) {
     staleTime: 60_000, gcTime: 5 * 60_000,
   });
 
-  // Pull true delivery analytics from email_history for this campaign's contacts
   const contactEmails = useMemo(() => {
     return contacts.map(c => c.contacts?.email).filter(Boolean);
   }, [contacts]);
@@ -256,7 +302,6 @@ export function CampaignAnalytics({ campaignId, campaign }: Props) {
     staleTime: 60_000, gcTime: 5 * 60_000,
   });
 
-  // Template metadata for the per-template performance panel
   const { data: templates = [] } = useQuery({
     queryKey: ["campaign-templates-meta", campaignId],
     queryFn: async () => {
@@ -270,13 +315,7 @@ export function CampaignAnalytics({ campaignId, campaign }: Props) {
     staleTime: 60_000, gcTime: 5 * 60_000,
   });
 
-  const handleRefresh = () => {
-    queryClient.invalidateQueries({ queryKey: ["campaign-accounts", campaignId] });
-    queryClient.invalidateQueries({ queryKey: ["campaign-contacts", campaignId] });
-    queryClient.invalidateQueries({ queryKey: ["campaign-communications", campaignId] });
-    queryClient.invalidateQueries({ queryKey: ["campaign-deals", campaignId] });
-    queryClient.invalidateQueries({ queryKey: ["campaign-email-history", campaignId] });
-  };
+  // Refresh now happens automatically on mount (see effect above).
 
   // ───── Date / channel filtering ─────
   const cutoff = useMemo(() => {
@@ -299,7 +338,6 @@ export function CampaignAnalytics({ campaignId, campaign }: Props) {
     return rows;
   }, [communications, cutoff, channelFilter]);
 
-  // Previous-period comparison set (same window length immediately before)
   const prevPeriodComms = useMemo(() => {
     if (!cutoff) return [];
     const days = parseInt(dateRange, 10);
@@ -311,38 +349,34 @@ export function CampaignAnalytics({ campaignId, campaign }: Props) {
     });
   }, [communications, cutoff, dateRange]);
 
-  // ───── Email metrics (corrected logic) ─────
+  // ───── Email metrics — per-campaign attribution only ─────
   const emailStats = useMemo(() => {
-    const allEmails = filteredComms.filter(c => c.communication_type === "Email");
-    const provider = allEmails.filter(isProviderSent);
-    const manual = allEmails.filter(c => c.sent_via === "manual" || !c.sent_via);
-    const inbound = allEmails.filter(isInbound);
+    // Unified counting rules — see src/components/campaigns/emailMetrics.ts.
+    // Same numbers in Outreach chips, Analytics tiles and Overview widget.
+    const base = computeEmailStats(filteredComms);
 
-    const sent = provider.length;
-    const bounced = provider.filter(isBounce).length;
-    const delivered = Math.max(0, sent - bounced);
-
-    // True opens & replies via email_history when available, fallback to comms
+    // Augment opens with email_history aggregate (capped at delivered) so a
+    // recipient who opened on a device the tracking pixel mis-classified as
+    // a bot still counts when the provider's own open log saw them.
     const ehInWindow = (emailHistory as any[]).filter(e => {
       if (!cutoff) return true;
       return e.sent_at && isAfter(new Date(e.sent_at), cutoff);
     });
     const openedFromHistory = ehInWindow.filter(e => e.opened_at || (e.unique_opens ?? 0) > 0).length;
-    const openedFromComms = provider.filter(p => p.opened_at || (p.open_count ?? 0) > 0).length;
-    const opened = Math.max(openedFromHistory, openedFromComms);
-    const repliedFromHistory = ehInWindow.reduce((s, e) => s + (e.reply_count || 0), 0);
+    const opened = Math.min(base.delivered, Math.max(openedFromHistory, base.opened));
 
-    // Distinct conversations with inbound rows = replies (fallback)
-    const repliedConvIds = new Set(inbound.map(c => c.conversation_id).filter(Boolean));
-    const repliedFromComms = repliedConvIds.size || provider.filter(p => p.email_status === "Replied").length;
-
-    const replied = Math.max(repliedFromHistory, repliedFromComms);
+    const inbound = filteredComms.filter((c: any) => c.communication_type === "Email" && c.delivery_status === "received");
 
     return {
-      sent, delivered, bounced, opened, replied,
-      manualLogged: manual.length,
+      sent: base.sent,
+      delivered: base.delivered,
+      bounced: base.bounced,
+      failed: base.failed,
+      opened,
+      replied: base.replied,
+      manualLogged: base.manualLogged,
       inboundCount: inbound.length,
-      totalLogged: sent + manual.length,
+      totalLogged: base.sent + base.manualLogged,
     };
   }, [filteredComms, emailHistory, cutoff]);
 
@@ -362,61 +396,100 @@ export function CampaignAnalytics({ campaignId, campaign }: Props) {
   const dealsWon = deals.filter(d => d.stage === "Won");
   const totalDealValue = deals.reduce((s, d) => s + (Number(d.total_contract_value) || 0), 0);
 
-  // ───── Hero KPIs with previous-period delta ─────
+  // ───── Hero KPIs ─────
+  // Bug #1: prev-period replies must be computed the same way as current
+  // (distinct inbound conv ids minus bounced conv ids), not raw inbound count.
+  // Prev-period stats use the same unified rules so trend deltas are consistent
+  // with the headline numbers (no apples-to-oranges comparisons).
+  const prevStats = useMemo(() => computeEmailStats(prevPeriodComms), [prevPeriodComms]);
+  const prevReplies = prevStats.replied;
+  const prevSent = prevStats.sent;
+
+  const replyRatePct = pct(emailStats.replied, emailStats.sent);
+  const bounceRatePct = pct(emailStats.bounced, emailStats.sent);
+
+  const goSetupAudience = () => onDrilldown?.({ tab: "setup", section: "audience" });
+  type OutreachStatus = "all" | "sent" | "delivered" | "opened" | "replied" | "failed" | "bounced" | "notReplied" | "needsFollowup";
+  const goOutreach = (status?: OutreachStatus, channel: "email" | "linkedin" | "call" = "email") => {
+    onDrilldown?.({ tab: "monitoring", view: "outreach", channel, status: status ?? "all" });
+  };
+  const goDeals = (extra: string = "") => navigate(`/deals?campaign=${campaignId}${extra}`);
+
   const heroKpis = useMemo(() => {
-    const prevSent = prevPeriodComms.filter(isProviderSent).length;
-    const prevReplies = prevPeriodComms.filter(isInbound).length;
-
-    return [
-      { label: "Reach (Contacts)", value: contacts.length, icon: Users, accent: "primary" as const,
-        sublabel: `${accounts.length} accounts` },
-      { label: "Emails Sent", value: emailStats.sent, icon: Send, accent: "primary" as const,
-        sublabel: emailStats.manualLogged > 0 ? `+${emailStats.manualLogged} manual logs` : undefined,
-        delta: dateRange !== "all" ? trendDelta(emailStats.sent, prevSent) : undefined },
-      { label: "Reply Rate", value: `${pct(emailStats.replied, emailStats.sent)}%`, icon: Reply, accent: "success" as const,
+    const tiles: Array<Parameters<typeof HeroKpiTile>[0]> = [
+      {
+        label: "Reach (Contacts)", value: contacts.length, icon: Users, accent: "primary",
+        sublabel: `${accounts.length} account${accounts.length === 1 ? "" : "s"}`,
+        onClick: onDrilldown ? goSetupAudience : undefined,
+      },
+      {
+        label: "Emails Sent", value: emailStats.sent, icon: Send, accent: "primary",
+        sublabel: emailStats.manualLogged > 0 ? `+${emailStats.manualLogged} manual` : undefined,
+        delta: dateRange !== "all" ? trendDelta(emailStats.sent, prevSent) : undefined,
+        onClick: onDrilldown ? () => goOutreach("sent") : undefined,
+      },
+      {
+        label: "Reply Rate", value: `${replyRatePct}%`, icon: Reply, accent: "success",
         sublabel: `${emailStats.replied}/${emailStats.sent} replied`,
-        delta: dateRange !== "all" ? trendDelta(emailStats.replied, prevReplies) : undefined },
-      { label: "Deals Won", value: dealsWon.length, icon: Trophy, accent: "call" as const,
-        sublabel: `of ${deals.length} created` },
-      { label: "Pipeline Value", value: `€${totalDealValue.toLocaleString()}`, icon: DollarSign, accent: "linkedin" as const,
-        sublabel: `${deals.length} deal${deals.length === 1 ? "" : "s"}` },
+        delta: dateRange !== "all" ? trendDelta(emailStats.replied, prevReplies) : undefined,
+        onClick: onDrilldown ? () => goOutreach("replied") : undefined,
+      },
+      {
+        label: "Bounce Rate", value: `${bounceRatePct}%`, icon: AlertTriangle, accent: "failed",
+        sublabel: `${emailStats.bounced}/${emailStats.sent} bounced`,
+        onClick: onDrilldown ? () => goOutreach("bounced") : undefined,
+      },
+      {
+        label: "Deals Won", value: dealsWon.length, icon: Trophy, accent: "call",
+        sublabel: `of ${deals.length} created`,
+        onClick: () => goDeals(dealsWon.length > 0 ? "&stage=Won" : ""),
+      },
+      {
+        label: "Pipeline", value: `€${totalDealValue.toLocaleString()}`, icon: DollarSign, accent: "linkedin",
+        onClick: () => goDeals(),
+      },
     ];
-  }, [contacts.length, accounts.length, emailStats, dealsWon.length, deals.length, totalDealValue, prevPeriodComms, dateRange]);
+    return tiles;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contacts.length, accounts.length, emailStats, dealsWon.length, deals.length, totalDealValue, prevSent, prevReplies, dateRange, replyRatePct, bounceRatePct, onDrilldown, campaignId]);
 
-  // ───── Funnel (guarded monotonic non-increasing) ─────
+  // ───── Funnel ─────
+  // Bug #5: clamp Won against the pre-clamped Created so a Won deal that
+  // skipped Qualified is still counted, then propagate non-increasing.
   const funnel = useMemo(() => {
     const targeted = contacts.length;
     const contacted = contacts.filter(c => c.stage !== "Not Contacted").length;
     const respondedC = responded.length;
     const qualified = contacts.filter(c => c.stage === "Qualified" || c.stage === "Converted").length;
     const created = deals.length;
-    const won = dealsWon.length;
+    const won = Math.min(dealsWon.length, created);
     const raw = [
-      { label: "Targeted", value: targeted, icon: Target },
-      { label: "Contacted", value: contacted, icon: Send },
-      { label: "Responded", value: respondedC, icon: Reply },
-      { label: "Qualified", value: qualified, icon: TrendingUp },
-      { label: "Deal Created", value: Math.min(created, qualified || created), icon: BarChart3 },
-      { label: "Won", value: won, icon: Trophy },
+      { label: "Targeted", value: targeted, icon: Target, status: undefined as undefined | "all" | "sent" | "replied", goto: "audience" as const },
+      { label: "Contacted", value: contacted, icon: Send, status: "sent" as const, goto: "outreach" as const },
+      { label: "Responded", value: respondedC, icon: Reply, status: "replied" as const, goto: "outreach" as const },
+      { label: "Qualified", value: qualified, icon: TrendingUp, status: undefined, goto: "audience" as const },
+      { label: "Deal Created", value: created, icon: BarChart3, status: undefined, goto: "deals" as const },
+      { label: "Won", value: won, icon: Trophy, status: undefined, goto: "dealsWon" as const },
     ];
-    // Guard non-increasing
     for (let i = 1; i < raw.length; i++) {
       raw[i].value = Math.min(raw[i].value, raw[i - 1].value);
     }
     return raw;
   }, [contacts, responded.length, deals.length, dealsWon.length]);
 
-  // ───── Channel mix donut ─────
+  // ───── Channel mix ─────
+  // Bug #9: filter empty BEFORE the col-span decision (was filtering after).
   const channelData = useMemo(() => {
-    const data = [
-      showEmailCh && { name: "Email",    value: filteredComms.filter(c => c.communication_type === "Email").length, fill: CHART.primary },
-      showCallCh && { name: "Call",     value: callStats.total,    fill: CHART.call },
-      showLinkedInCh && { name: "LinkedIn", value: linkedInStats.total, fill: CHART.linkedin },
-    ].filter(Boolean) as { name: string; value: number; fill: string }[];
-    return data.filter(d => d.value > 0);
+    type Row = { name: string; value: number; fill: string; channel: "email" | "call" | "linkedin" };
+    const data: Row[] = [
+      showEmailCh ? { name: "Email", value: filteredComms.filter(c => c.communication_type === "Email").length, fill: CHART.primary as string, channel: "email" } : null,
+      showCallCh ? { name: "Call", value: callStats.total, fill: CHART.call as string, channel: "call" } : null,
+      showLinkedInCh ? { name: "LinkedIn", value: linkedInStats.total, fill: CHART.linkedin as string, channel: "linkedin" } : null,
+    ].filter((x): x is Row => !!x && x.value > 0);
+    return data;
   }, [filteredComms, callStats.total, linkedInStats.total, showEmailCh, showCallCh, showLinkedInCh]);
 
-  // ───── Timeline (stacked area) ─────
+  // ───── Timeline ─────
   const timelineData = useMemo(() => {
     if (filteredComms.length === 0) return [];
     const map: Record<string, { week: string; ts: number; Email: number; Call: number; LinkedIn: number }> = {};
@@ -433,87 +506,49 @@ export function CampaignAnalytics({ campaignId, campaign }: Props) {
     return Object.values(map).sort((a, b) => a.ts - b.ts);
   }, [filteredComms]);
 
-  // ───── Response heatmap (day × time-bucket) ─────
-  const heatmap = useMemo(() => {
-    const responseRows = filteredComms.filter((c: any) =>
-      c.communication_date && (
-        c.email_status === "Replied" ||
-        c.call_outcome === "Interested" ||
-        c.linkedin_status === "Responded" ||
-        isInbound(c)
-      )
-    );
-    const grid: number[][] = DAY_NAMES.map(() => TIME_BUCKETS.map(() => 0));
-    let total = 0;
-    responseRows.forEach((c: any) => {
-      const d = new Date(c.communication_date);
-      const dow = (d.getDay() + 6) % 7; // Mon=0
-      const h = d.getHours();
-      const bIdx = TIME_BUCKETS.findIndex(b => h >= b.range[0] && h < b.range[1]);
-      if (bIdx >= 0) { grid[dow][bIdx]++; total++; }
-    });
-    let max = 0;
-    grid.forEach(r => r.forEach(v => { if (v > max) max = v; }));
-    return { grid, max, total };
-  }, [filteredComms]);
-
-  // ───── Day-bar fallback when heatmap data sparse ─────
-  const dayBars = useMemo(() => {
-    return DAY_NAMES.map((d, i) => ({
-      day: d,
-      responses: heatmap.grid[i].reduce((s, v) => s + v, 0),
-    }));
-  }, [heatmap]);
-
-  // ───── Best send-time histogram (Email sends bucketed by hour-of-day) ─────
-  const sendTimeBuckets = useMemo(() => {
-    const buckets: { label: string; sends: number; replies: number }[] = TIME_BUCKETS.map(b => ({
-      label: b.label, sends: 0, replies: 0,
-    }));
-    const provider = filteredComms.filter(isProviderSent);
-    provider.forEach((c: any) => {
-      if (!c.communication_date) return;
-      const h = new Date(c.communication_date).getHours();
-      const idx = TIME_BUCKETS.findIndex(b => h >= b.range[0] && h < b.range[1]);
-      if (idx >= 0) buckets[idx].sends++;
-    });
-    // Map replies back to the send time of the parent message when possible
-    const inboundConvIds = new Set(
-      filteredComms.filter(isInbound).map((c: any) => c.conversation_id).filter(Boolean)
-    );
-    provider.forEach((c: any) => {
-      if (!c.communication_date) return;
-      if (!c.conversation_id || !inboundConvIds.has(c.conversation_id)) return;
-      const h = new Date(c.communication_date).getHours();
-      const idx = TIME_BUCKETS.findIndex(b => h >= b.range[0] && h < b.range[1]);
-      if (idx >= 0) buckets[idx].replies++;
-    });
-    return buckets;
-  }, [filteredComms]);
-
   // ───── Per-template performance ─────
+  // Bug #6: tids on campaign_communications are mostly UUIDs, but legacy rows
+  // can carry the template_name string. Resolve by id first, then by name.
   const templatePerf = useMemo(() => {
-    const nameById = new Map<string, string>();
-    (templates as any[]).forEach(t => nameById.set(t.id, t.template_name || "(unnamed)"));
-    const agg: Record<string, { id: string; name: string; sent: number; opened: number; replied: number; bounced: number }> = {};
-    const provider = filteredComms.filter(isProviderSent);
-    const repliedConvIds = new Set(
-      filteredComms.filter(isInbound).map((c: any) => c.conversation_id).filter(Boolean)
-    );
-    provider.forEach((c: any) => {
-      const tid = c.template_id || "__none__";
-      if (!agg[tid]) {
-        agg[tid] = {
-          id: tid,
-          name: tid === "__none__" ? "Ad-hoc / no template" : (nameById.get(tid) || "(deleted template)"),
-          sent: 0, opened: 0, replied: 0, bounced: 0,
-        };
-      }
+    const byId = new Map<string, string>();
+    const byName = new Map<string, string>();
+    (templates as any[]).forEach(t => {
+      byId.set(t.id, t.template_name || "(unnamed)");
+      if (t.template_name) byName.set(t.template_name, t.template_name);
+    });
+    const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+    const agg: Record<string, { id: string; name: string; deleted: boolean; sent: number; opened: number; replied: number; bounced: number }> = {};
+    // Use the same deduped outbound set + bounced/replied conv id sets as the
+    // headline KPI tile so per-template Sent sums to the headline number.
+    const baseStats = computeEmailStats(filteredComms);
+    const seenDedupe = new Set<string>();
+    const dedupedOutbound = filteredComms.filter((c: any) => {
+      if (c.communication_type !== "Email") return false;
+      if (c.sent_via !== "azure" && c.sent_via !== "manual" && c.sent_via) return false;
+      // Exclude bounce / failed rows from the per-template send count
+      if (isBounce(c) || isFailedSend(c)) return false;
+      const k = String(c.internet_message_id || c.message_id || c.send_request_id || c.id);
+      if (seenDedupe.has(k)) return false;
+      seenDedupe.add(k);
+      return true;
+    });
+    dedupedOutbound.forEach((c: any) => {
+      const tid = (c.template_id || "").toString().trim() || "__none__";
+      const resolved = tid === "__none__"
+        ? { name: "Ad-hoc / no template", deleted: false }
+        : byId.has(tid)
+          ? { name: byId.get(tid)!, deleted: false }
+          : byName.has(tid)
+            ? { name: byName.get(tid)!, deleted: false }
+            : isUuid(tid)
+              ? { name: "(deleted template)", deleted: true }
+              : { name: tid, deleted: false };
+      if (!agg[tid]) agg[tid] = { id: tid, name: resolved.name, deleted: resolved.deleted, sent: 0, opened: 0, replied: 0, bounced: 0 };
       const row = agg[tid];
       row.sent++;
       if (c.opened_at || (c.open_count ?? 0) > 0) row.opened++;
-      if (c.conversation_id && repliedConvIds.has(c.conversation_id)) row.replied++;
-      if (isBounce(c)) row.bounced++;
+      if (c.conversation_id && baseStats.repliedConvIds.has(c.conversation_id)) row.replied++;
+      if (c.conversation_id && baseStats.bouncedConvIds.has(c.conversation_id)) row.bounced++;
     });
     return Object.values(agg).sort((a, b) => b.sent - a.sent);
   }, [filteredComms, templates]);
@@ -542,10 +577,11 @@ export function CampaignAnalytics({ campaignId, campaign }: Props) {
   }, [contacts]);
 
   const breakdownByAccount = useMemo(() => {
-    const map: Record<string, { name: string; touches: number; replies: number }> = {};
+    const map: Record<string, { id: string | null; name: string; touches: number; replies: number }> = {};
     filteredComms.forEach((c: any) => {
       const name = c.accounts?.account_name || "Unknown";
-      if (!map[name]) map[name] = { name, touches: 0, replies: 0 };
+      const id = c.account_id || null;
+      if (!map[name]) map[name] = { id, name, touches: 0, replies: 0 };
       map[name].touches++;
       if (isInbound(c) || c.email_status === "Replied" || c.call_outcome === "Interested" || c.linkedin_status === "Responded") {
         map[name].replies++;
@@ -554,164 +590,171 @@ export function CampaignAnalytics({ campaignId, campaign }: Props) {
     return Object.values(map).sort((a, b) => b.replies - a.replies || b.touches - a.touches).slice(0, 5);
   }, [filteredComms]);
 
-  // ───── Export ─────
-  const handleExport = useCallback((kind: "csv" | "json") => {
-    const payload = {
-      exported_at: new Date().toISOString(),
-      campaign_id: campaignId,
-      filters: { date_range: dateRange, channel: channelFilter },
-      hero: heroKpis.map(k => ({ label: k.label, value: k.value, sublabel: k.sublabel })),
-      email: emailStats,
-      calls: callStats,
-      linkedin: linkedInStats,
-      funnel,
-      channels: channelData,
-      timeline: timelineData,
-      breakdowns: {
-        region: breakdownByRegion,
-        industry: breakdownByIndustry,
-        top_accounts: breakdownByAccount,
-      },
-    };
-    const ts = format(new Date(), "yyyy-MM-dd");
-    if (kind === "json") {
-      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url; a.download = `campaign-analytics-${ts}.json`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-      return;
-    }
-    // CSV
-    const rows: string[][] = [];
-    rows.push(["Campaign Analytics Export"]);
-    rows.push(["Date Range", dateRange === "all" ? "All time" : `Last ${dateRange} days`]);
-    rows.push(["Channel Filter", channelFilter]);
-    rows.push([]);
-    rows.push(["KPI", "Value", "Sublabel"]);
-    heroKpis.forEach(k => rows.push([k.label, String(k.value), k.sublabel || ""]));
-    rows.push([]);
-    rows.push(["Funnel Stage", "Count"]);
-    funnel.forEach(f => rows.push([f.label, String(f.value)]));
-    rows.push([]);
-    rows.push(["Email Metric", "Count"]);
-    Object.entries(emailStats).forEach(([k, v]) => rows.push([k, String(v)]));
-    rows.push([]);
-    rows.push(["Region", "Contacts", "Replies"]);
-    breakdownByRegion.forEach(r => rows.push([r.name, String(r.contacts), String(r.replies)]));
-    rows.push([]);
-    rows.push(["Industry", "Contacts", "Replies"]);
-    breakdownByIndustry.forEach(r => rows.push([r.name, String(r.contacts), String(r.replies)]));
-    rows.push([]);
-    rows.push(["Top Accounts", "Touches", "Replies"]);
-    breakdownByAccount.forEach(r => rows.push([r.name, String(r.touches), String(r.replies)]));
+  // Export removed — Outreach toolbar is now the single export surface.
 
-    const csv = rows.map(r => r.map(c => /[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c).join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = `campaign-analytics-${ts}.csv`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-  }, [campaignId, dateRange, channelFilter, heroKpis, emailStats, callStats, linkedInStats, funnel, channelData, timelineData, breakdownByRegion, breakdownByIndustry, breakdownByAccount]);
+
+  // Funnel row click handler
+  const onFunnelRowClick = (stage: typeof funnel[number]) => {
+    if (!onDrilldown && stage.goto !== "deals" && stage.goto !== "dealsWon") return;
+    if (stage.goto === "audience") onDrilldown?.({ tab: "setup", section: "audience" });
+    else if (stage.goto === "outreach") onDrilldown?.({ tab: "monitoring", view: "outreach", channel: "email", status: stage.status ?? "all" });
+    else if (stage.goto === "deals") goDeals();
+    else if (stage.goto === "dealsWon") goDeals(stage.value > 0 ? "&stage=Won" : "");
+  };
+
+  // Email Performance tile click → matching outreach status filter
+  const emailTileClick = (status: "sent" | "delivered" | "opened" | "replied" | "bounced" | "failed") => {
+    onDrilldown?.({ tab: "monitoring", view: "outreach", channel: "email", status });
+  };
+
+  const breakdownsSummary = `${breakdownByRegion.length} region${breakdownByRegion.length === 1 ? "" : "s"} · ${breakdownByIndustry.length} industr${breakdownByIndustry.length === 1 ? "y" : "ies"} · ${breakdownByAccount.length} top accounts`;
 
   // ────────────────────────── Render ──────────────────────────
   return (
-    <div className="space-y-4">
-      {/* TOOLBAR */}
-      <div className="sticky top-0 z-10 -mx-1 px-1 py-2 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 flex flex-wrap items-center gap-2 border-b border-border/40">
-        <div className="flex items-center gap-2">
-          <Select value={dateRange} onValueChange={(v) => setDateRange(v as DateRange)}>
-            <SelectTrigger className="h-8 w-[140px] text-xs"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="7">Last 7 days</SelectItem>
-              <SelectItem value="30">Last 30 days</SelectItem>
-              <SelectItem value="90">Last 90 days</SelectItem>
-              <SelectItem value="all">All time</SelectItem>
-            </SelectContent>
-          </Select>
-          <div className="hidden md:inline-flex h-8 items-center rounded-md border bg-muted/40 p-0.5 text-xs">
-            {(["all", "email", "call", "linkedin"] as ChannelFilter[])
-              .filter(c => c === "all"
-                || (c === "email" && showEmailCh)
-                || (c === "call" && showCallCh)
-                || (c === "linkedin" && showLinkedInCh))
-              .map(c => (
-                <button
-                  key={c}
-                  onClick={() => setChannelFilter(c)}
-                  className={`px-2.5 h-7 rounded-sm capitalize transition-colors ${channelFilter === c ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                >
-                  {c === "all" ? "All channels" : c}
-                </button>
-              ))}
+    <div className="space-y-3">
+      {/* TOOLBAR — matches Outreach toolbar style. Toggle + filters all inline. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-md border bg-muted/30 px-2 py-1.5">
+        {viewMode && onViewModeChange && (
+          <div className="inline-flex h-7 shrink-0 items-center rounded-md border bg-background p-0.5 text-xs shadow-sm">
+            <button
+              type="button"
+              onClick={() => onViewModeChange("outreach")}
+              className={`h-6 shrink-0 whitespace-nowrap rounded-sm px-3 transition-colors ${viewMode === "outreach" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              Outreach
+            </button>
+            <button
+              type="button"
+              onClick={() => onViewModeChange("analytics")}
+              className={`h-6 shrink-0 whitespace-nowrap rounded-sm px-3 transition-colors ${viewMode === "analytics" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              Analytics
+            </button>
           </div>
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-8"><Download className="h-3.5 w-3.5 mr-1" /> Export</Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => handleExport("csv")}>Export as CSV</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleExport("json")}>Export as JSON</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button variant="outline" size="sm" className="h-8" onClick={handleRefresh}>
-            <RefreshCw className="h-3.5 w-3.5 mr-1" /> Refresh
-          </Button>
+        )}
+        <Select value={dateRange} onValueChange={(v) => setDateRange(v as DateRange)}>
+          <SelectTrigger className="h-7 w-[130px] shrink-0 text-xs"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="7" className="text-xs">Last 7 days</SelectItem>
+            <SelectItem value="30" className="text-xs">Last 30 days</SelectItem>
+            <SelectItem value="90" className="text-xs">Last 90 days</SelectItem>
+            <SelectItem value="all" className="text-xs">All time</SelectItem>
+          </SelectContent>
+        </Select>
+        <div className="inline-flex h-7 shrink-0 items-center rounded-md border bg-muted/40 p-0.5 text-xs">
+          {(["all", "email", "call", "linkedin"] as ChannelFilter[])
+            .filter(c => c === "all"
+              || (c === "email" && showEmailCh)
+              || (c === "call" && showCallCh)
+              || (c === "linkedin" && showLinkedInCh))
+            .map(c => (
+              <button
+                key={c}
+                onClick={() => setChannelFilter(c)}
+                className={`h-6 shrink-0 whitespace-nowrap rounded-sm px-2.5 capitalize transition-colors ${channelFilter === c ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                {c === "all" ? "All Channels" : c}
+              </button>
+            ))}
         </div>
       </div>
 
-      {/* ZONE A — Hero KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-        {heroKpis.map(k => (
-          <HeroKpiTile key={k.label} {...k} />
-        ))}
+      {/* ZONE A — Feature-rich KPIs (Hero + Email Performance merged) */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+        {heroKpis.map(k => <HeroKpiTile key={k.label} {...k} />)}
       </div>
+      {(emailStats.sent > 0 || emailStats.manualLogged > 0) && (
+        <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+          {[
+            { key: "sent",      label: "Sent",      value: emailStats.sent,      color: CHART.primary,  icon: Send,           tint: "from-sky-500/10 to-sky-500/0       border-sky-500/30" },
+            { key: "delivered", label: "Delivered", value: emailStats.delivered, color: CHART.success,  icon: Inbox,          tint: "from-emerald-500/10 to-emerald-500/0 border-emerald-500/30" },
+            { key: "opened",    label: "Opened",    value: emailStats.opened,    color: CHART.opened,   icon: Eye,            tint: "from-amber-500/10 to-amber-500/0   border-amber-500/30" },
+            { key: "replied",   label: "Replied",   value: emailStats.replied,   color: CHART.linkedin, icon: Reply,          tint: "from-violet-500/10 to-violet-500/0 border-violet-500/30" },
+            { key: "bounced",   label: "Bounced",   value: emailStats.bounced,   color: CHART.failed,   icon: AlertTriangle,  tint: "from-rose-500/10 to-rose-500/0     border-rose-500/30" },
+            { key: "failed",    label: "Failed",    value: emailStats.failed,    color: CHART.failed,   icon: XCircle,        tint: "from-rose-500/10 to-rose-500/0     border-rose-500/30" },
+          ].map(s => (
+            <button
+              key={s.label}
+              type="button"
+              onClick={() => emailTileClick(s.key as any)}
+              disabled={!onDrilldown}
+              className={`rounded-md border bg-gradient-to-br p-2 text-left transition-all enabled:hover:shadow-sm enabled:hover:-translate-y-0.5 disabled:cursor-default ${s.tint}`}
+            >
+              <div className="flex items-center justify-between text-muted-foreground">
+                <span className="text-[10px] font-medium uppercase tracking-wide">{s.label}</span>
+                <s.icon className="h-3 w-3" style={{ color: s.color }} />
+              </div>
+              <div className="text-lg font-bold tabular-nums leading-tight mt-0.5" style={{ color: s.color }}>{s.value}</div>
+            </button>
+          ))}
+        </div>
+      )}
 
-      {/* ZONE B — Funnel + Channel Mix */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      {/* ZONE B — Funnel (narrow) + Email Rates / Channel Mix side car */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <Card className="border-border/60 shadow-sm lg:col-span-2">
-          <CardHeader className="p-4 pb-2">
+          <CardHeader className="p-3 pb-1.5">
             <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <Target className="h-4 w-4 text-primary" /> Conversion Funnel
+              <Target className="h-3.5 w-3.5 text-primary" /> Conversion Funnel
+              {emailStats.manualLogged > 0 && (
+                <TooltipProvider delayDuration={150}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Badge variant="outline" className="ml-1 h-4 text-[10px] font-normal">+{emailStats.manualLogged} manual</Badge>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="text-xs max-w-[220px]">
+                      {emailStats.manualLogged} manually logged email{emailStats.manualLogged === 1 ? "" : "s"} (not provider-sent, excluded from rates).
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
             </CardTitle>
           </CardHeader>
-          <CardContent className="p-4 pt-2">
+          <CardContent className="p-3 pt-1">
             {funnel[0].value === 0 ? (
-              <EmptyHint icon={Users} message="Add contacts to this campaign to see the funnel" />
+              <EmptyHint
+                icon={Users}
+                message="Add contacts to this campaign to see the funnel"
+                ctaLabel={onDrilldown ? "Open audience" : undefined}
+                onCta={onDrilldown ? goSetupAudience : undefined}
+              />
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-2">
                 {funnel.map((stage, i) => {
                   const max = funnel[0].value || 1;
                   const widthPct = pct(stage.value, max);
                   const prev = i > 0 ? funnel[i - 1].value : stage.value;
                   const conv = pct(stage.value, prev);
                   const Icon = stage.icon;
+                  const clickable = !!onDrilldown || stage.goto === "deals" || stage.goto === "dealsWon";
                   return (
-                    <div key={stage.label}>
-                      <div className="flex items-center gap-3">
-                        <div className="w-32 text-xs text-muted-foreground flex items-center gap-1.5">
-                          <Icon className="h-3.5 w-3.5" /> {stage.label}
-                        </div>
-                        <div className="flex-1 bg-muted rounded-md h-7 overflow-hidden relative">
-                          <div
-                            className="h-full rounded-md flex items-center justify-end pr-2 transition-all"
-                            style={{
-                              width: `${stage.value === 0 ? 0 : Math.max(widthPct, 4)}%`,
-                              background: `linear-gradient(90deg, ${CHART.primary}, ${CHART.primary} ${100 - i * 12}%, hsl(var(--primary) / 0.6))`,
-                            }}
-                          >
-                            <span className="text-xs font-semibold text-primary-foreground tabular-nums">{stage.value}</span>
-                          </div>
-                        </div>
-                        <div className="w-12 text-xs text-muted-foreground tabular-nums text-right">{widthPct}%</div>
+                    <div
+                      key={stage.label}
+                      className={`flex items-center gap-2 rounded px-1 py-0.5 ${clickable ? "cursor-pointer hover:bg-muted/30" : ""}`}
+                      onClick={clickable ? () => onFunnelRowClick(stage) : undefined}
+                      role={clickable ? "button" : undefined}
+                      tabIndex={clickable ? 0 : -1}
+                      onKeyDown={clickable ? (e) => { if (e.key === "Enter") onFunnelRowClick(stage); } : undefined}
+                    >
+                      <div className="w-24 text-xs text-muted-foreground flex items-center gap-1.5 shrink-0">
+                        <Icon className="h-3 w-3" /> {stage.label}
                       </div>
-                      {i > 0 && (
-                        <div className="ml-32 pl-3 mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground">
-                          <ArrowRight className="h-2.5 w-2.5" />
-                          <Badge variant="secondary" className="h-4 px-1.5 text-[10px] font-normal">
-                            {conv}% step conversion
-                          </Badge>
+                      <div className="flex-1 bg-muted rounded h-5 overflow-hidden relative">
+                        <div
+                          className="h-full rounded flex items-center justify-end pr-2 transition-all"
+                          style={{
+                            width: `${stage.value === 0 ? 0 : Math.max(widthPct, 4)}%`,
+                            background: `linear-gradient(90deg, ${CHART.primary}, hsl(var(--primary) / 0.7))`,
+                          }}
+                        >
+                          <span className="text-[11px] font-semibold text-primary-foreground tabular-nums">{stage.value}</span>
                         </div>
+                      </div>
+                      <div className="w-9 text-[11px] text-muted-foreground tabular-nums text-right shrink-0">{widthPct}%</div>
+                      {i > 0 && (
+                        <Badge variant="secondary" className="h-4 px-1.5 text-[10px] font-normal shrink-0 hidden sm:inline-flex">
+                          <ArrowRight className="h-2.5 w-2.5 mr-0.5" />{conv}%
+                        </Badge>
                       )}
                     </div>
                   );
@@ -721,350 +764,297 @@ export function CampaignAnalytics({ campaignId, campaign }: Props) {
           </CardContent>
         </Card>
 
-        <Card className="border-border/60 shadow-sm">
-          <CardHeader className="p-4 pb-2">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <Filter className="h-4 w-4 text-primary" /> Channel Mix
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-4 pt-2">
-            {channelData.length === 0 ? (
-              <EmptyHint icon={MessageSquare} message="No outreach yet" />
-            ) : (
-              <>
-                <ResponsiveContainer width="100%" height={180}>
-                  <PieChart>
-                    <Pie data={channelData} cx="50%" cy="50%" innerRadius={45} outerRadius={75} paddingAngle={3} dataKey="value" stroke="none">
-                      {channelData.map((e, i) => <Cell key={i} fill={e.fill} />)}
-                    </Pie>
-                    <RechartsTooltip
-                      formatter={(v: number, n: string) => [`${v} messages`, n]}
-                      contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid hsl(var(--border))", background: "hsl(var(--background))" }}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
-                <div className="space-y-1.5 mt-2">
-                  {channelData.map(c => {
-                    const total = channelData.reduce((s, x) => s + x.value, 0);
-                    return (
-                      <div key={c.name} className="flex items-center justify-between text-xs">
-                        <div className="flex items-center gap-2">
-                          <span className="w-2 h-2 rounded-sm" style={{ background: c.fill }} />
-                          <span className="text-muted-foreground">{c.name}</span>
-                        </div>
-                        <span className="tabular-nums font-medium">{c.value} <span className="text-muted-foreground">({pct(c.value, total)}%)</span></span>
+        {/* Side car — Email Rates (when email sent) else Channel Mix else empty hint */}
+        {emailStats.sent > 0 ? (
+          <Card className="border-border/60 shadow-sm">
+            <CardHeader className="p-3 pb-1.5">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Mail className="h-3.5 w-3.5 text-primary" /> Email Rates
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-3 pt-1 space-y-2.5">
+              <RateRow label="Delivery Rate" num={emailStats.delivered} den={emailStats.sent} color={CHART.success}
+                hint="Delivered / Sent. Delivered = Sent - Bounced - Failed." />
+              <RateRow label="Open Rate" num={emailStats.opened} den={emailStats.delivered} color={CHART.opened}
+                hint="Unique opens / Delivered (capped at 100%)." />
+              <RateRow label="Reply Rate" num={emailStats.replied} den={emailStats.sent} color={CHART.linkedin}
+                hint="Distinct conversations with >= 1 inbound (non-NDR) message / Sent." />
+              <RateRow label="Bounce Rate" num={emailStats.bounced} den={emailStats.sent} color={CHART.failed}
+                hint="Hard bounces only (Failed sends tracked separately)." />
+            </CardContent>
+          </Card>
+        ) : channelData.length >= 2 ? (
+          <Card className="border-border/60 shadow-sm">
+            <CardHeader className="p-3 pb-1.5">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Filter className="h-3.5 w-3.5 text-primary" /> Channel Mix
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-3 pt-1">
+              <ResponsiveContainer width="100%" height={140}>
+                <PieChart>
+                  <Pie data={channelData} cx="50%" cy="50%" innerRadius={36} outerRadius={60} paddingAngle={3} dataKey="value" stroke="none">
+                    {channelData.map((e, i) => <Cell key={i} fill={e.fill} />)}
+                  </Pie>
+                  <RechartsTooltip
+                    formatter={(v: number, n: string) => [`${v} messages`, n]}
+                    contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid hsl(var(--border))", background: "hsl(var(--background))" }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="space-y-1 mt-1">
+                {channelData.map(c => {
+                  const total = channelData.reduce((s, x) => s + x.value, 0);
+                  const clickable = !!onDrilldown;
+                  return (
+                    <div
+                      key={c.name}
+                      className={`flex items-center justify-between text-xs rounded px-1 py-0.5 ${clickable ? "cursor-pointer hover:bg-muted/30" : ""}`}
+                      onClick={clickable ? () => onDrilldown!({ tab: "monitoring", view: "outreach", channel: c.channel }) : undefined}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-sm" style={{ background: c.fill }} />
+                        <span className="text-muted-foreground">{c.name}</span>
                       </div>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
+                      <span className="tabular-nums font-medium">{c.value} <span className="text-muted-foreground">({pct(c.value, total)}%)</span></span>
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        ) : (
+          <Card className="border-border/60 shadow-sm border-dashed">
+            <CardContent className="p-3 h-full flex items-center justify-center">
+              <EmptyHint
+                icon={Mail}
+                message="No outreach yet"
+                ctaLabel={onDrilldown ? "Send your first message" : undefined}
+                onCta={onDrilldown ? () => onDrilldown({ tab: "monitoring", view: "outreach", channel: "email" }) : undefined}
+              />
+            </CardContent>
+          </Card>
+        )}
       </div>
 
-      {/* ZONE C — Email Performance */}
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="p-4 pb-2">
-          <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Mail className="h-4 w-4 text-primary" /> Email Performance
-            {emailStats.manualLogged > 0 && (
-              <Badge variant="outline" className="ml-2 h-5 text-[10px] font-normal">
-                +{emailStats.manualLogged} manual log{emailStats.manualLogged === 1 ? "" : "s"}
-              </Badge>
-            )}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-4 pt-2">
-          {emailStats.sent === 0 && emailStats.manualLogged === 0 ? (
-            <EmptyHint
-              icon={Mail}
-              message="No emails sent yet"
-              ctaLabel="Send your first email"
-              onCta={() => {
-                const params = new URLSearchParams(window.location.search);
-                params.set("tab", "monitoring");
-                window.location.search = params.toString();
-              }}
-            />
-          ) : (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-                {[
-                  { label: "Sent",      value: emailStats.sent,      color: CHART.primary, icon: Send },
-                  { label: "Delivered", value: emailStats.delivered, color: CHART.success, icon: Inbox },
-                  { label: "Opened",    value: emailStats.opened,    color: CHART.opened,  icon: Eye },
-                  { label: "Replied",   value: emailStats.replied,   color: CHART.linkedin, icon: Reply },
-                  { label: "Bounced",   value: emailStats.bounced,   color: CHART.failed,  icon: AlertTriangle },
-                ].map(s => (
-                  <div key={s.label} className="rounded-md border border-border/60 p-3 bg-card">
-                    <div className="flex items-center justify-between text-muted-foreground">
-                      <span className="text-[11px] font-medium">{s.label}</span>
-                      <s.icon className="h-3.5 w-3.5" style={{ color: s.color }} />
+      {/* Channel Mix as standalone row when both Email Rates and Mix should show */}
+      {emailStats.sent > 0 && channelData.length >= 2 && (
+        <Card className="border-border/60 shadow-sm">
+          <CardHeader className="p-3 pb-1.5">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <Filter className="h-3.5 w-3.5 text-primary" /> Channel Mix
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-3 pt-1">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
+              <ResponsiveContainer width="100%" height={140}>
+                <PieChart>
+                  <Pie data={channelData} cx="50%" cy="50%" innerRadius={36} outerRadius={60} paddingAngle={3} dataKey="value" stroke="none">
+                    {channelData.map((e, i) => <Cell key={i} fill={e.fill} />)}
+                  </Pie>
+                  <RechartsTooltip
+                    formatter={(v: number, n: string) => [`${v} messages`, n]}
+                    contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid hsl(var(--border))", background: "hsl(var(--background))" }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="md:col-span-2 space-y-1">
+                {channelData.map(c => {
+                  const total = channelData.reduce((s, x) => s + x.value, 0);
+                  const clickable = !!onDrilldown;
+                  return (
+                    <div
+                      key={c.name}
+                      className={`flex items-center justify-between text-xs rounded px-1 py-0.5 ${clickable ? "cursor-pointer hover:bg-muted/30" : ""}`}
+                      onClick={clickable ? () => onDrilldown!({ tab: "monitoring", view: "outreach", channel: c.channel }) : undefined}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-sm" style={{ background: c.fill }} />
+                        <span className="text-muted-foreground">{c.name}</span>
+                      </div>
+                      <span className="tabular-nums font-medium">{c.value} <span className="text-muted-foreground">({pct(c.value, total)}%)</span></span>
                     </div>
-                    <div className="text-2xl font-bold tabular-nums mt-1" style={{ color: s.color }}>{s.value}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 pt-2">
-                <RateRow label="Delivery Rate" num={emailStats.delivered} den={emailStats.sent} color={CHART.success}
-                  hint="Delivered ÷ Sent. Sent excludes inbound replies and manual logs." />
-                <RateRow label="Open Rate" num={emailStats.opened} den={emailStats.delivered} color={CHART.opened}
-                  hint="Unique opens ÷ Delivered, sourced from email_history." />
-                <RateRow label="Reply Rate" num={emailStats.replied} den={emailStats.sent} color={CHART.linkedin}
-                  hint="Distinct conversations with at least one inbound message ÷ Sent." />
-                <RateRow label="Bounce Rate" num={emailStats.bounced} den={emailStats.sent} color={CHART.failed}
-                  hint="Bounces include delivery_status='failed' and email_status in (Bounced, Failed)." />
+                  );
+                })}
               </div>
             </div>
-          )}
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      )}
+
 
       {/* ZONE D — Trends */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {timelineData.length > 1 && (
         <Card className="border-border/60 shadow-sm">
-          <CardHeader className="p-4 pb-2">
+          <CardHeader className="p-3 pb-1.5">
             <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <BarChart3 className="h-4 w-4 text-primary" /> Outreach Timeline
+              <BarChart3 className="h-3.5 w-3.5 text-primary" /> Outreach Timeline
             </CardTitle>
           </CardHeader>
-          <CardContent className="p-4 pt-2">
-            {timelineData.length === 0 ? (
-              <EmptyHint icon={BarChart3} message="Activity will appear here over time" />
+          <CardContent className="p-3 pt-1">
+            <ResponsiveContainer width="100%" height={180}>
+              <AreaChart data={timelineData} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis dataKey="week" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                <YAxis allowDecimals={false} tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                <RechartsTooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid hsl(var(--border))", background: "hsl(var(--background))" }} />
+                {showEmailCh && <Area type="monotone" dataKey="Email" stackId="1" stroke={CHART.primary} fill={CHART.primary} fillOpacity={0.35} strokeWidth={2} />}
+                {showCallCh && <Area type="monotone" dataKey="Call" stackId="1" stroke={CHART.call} fill={CHART.call} fillOpacity={0.35} strokeWidth={2} />}
+                {showLinkedInCh && <Area type="monotone" dataKey="LinkedIn" stackId="1" stroke={CHART.linkedin} fill={CHART.linkedin} fillOpacity={0.35} strokeWidth={2} />}
+                <Legend iconSize={8} formatter={(v: string) => <span className="text-xs text-muted-foreground">{v}</span>} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ZONE E — Template Performance + Breakdowns side-by-side on lg */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <Card className="border-border/60 shadow-sm">
+          <CardHeader className="p-3 pb-1.5">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <Mail className="h-3.5 w-3.5 text-primary" /> Template Performance
+              <span className="text-[10px] text-muted-foreground font-normal">
+                · {templatePerf.length} used
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-3 pt-1">
+            {templatePerf.length === 0 ? (
+              <EmptyHint icon={Mail} message="No template-attributed sends yet" />
             ) : (
-              <ResponsiveContainer width="100%" height={220}>
-                <AreaChart data={timelineData} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis dataKey="week" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                  <YAxis allowDecimals={false} tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                  <RechartsTooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid hsl(var(--border))", background: "hsl(var(--background))" }} />
-                  {showEmailCh && <Area type="monotone" dataKey="Email" stackId="1" stroke={CHART.primary} fill={CHART.primary} fillOpacity={0.35} strokeWidth={2} />}
-                  {showCallCh && <Area type="monotone" dataKey="Call" stackId="1" stroke={CHART.call} fill={CHART.call} fillOpacity={0.35} strokeWidth={2} />}
-                  {showLinkedInCh && <Area type="monotone" dataKey="LinkedIn" stackId="1" stroke={CHART.linkedin} fill={CHART.linkedin} fillOpacity={0.35} strokeWidth={2} />}
-                  <Legend iconSize={8} formatter={(v: string) => <span className="text-xs text-muted-foreground">{v}</span>} />
-                </AreaChart>
-              </ResponsiveContainer>
+              <div className="space-y-0.5">
+                <div className="grid grid-cols-12 gap-2 text-[10px] text-muted-foreground uppercase tracking-wide font-medium px-1 pb-1">
+                  <div className="col-span-5">Template</div>
+                  <div className="col-span-1 text-right">Sent</div>
+                  <div className="col-span-2 text-right">Open</div>
+                  <div className="col-span-2 text-right">Reply</div>
+                  <div className="col-span-2 text-right">Bounce</div>
+                </div>
+                {templatePerf.map(t => {
+                  const openRate = pct(t.opened, t.sent);
+                  const replyRate = pct(t.replied, t.sent);
+                  const bounceRate = pct(t.bounced, t.sent);
+                  const clickable = !!onDrilldown;
+                  return (
+                    <div
+                      key={t.id}
+                      className={`grid grid-cols-12 gap-2 items-center text-xs px-1 py-1 rounded ${clickable ? "cursor-pointer hover:bg-muted/30" : ""}`}
+                      onClick={clickable ? () => onDrilldown!({ tab: "monitoring", view: "outreach", channel: "email", status: "sent" }) : undefined}
+                      title={t.name}
+                    >
+                      <div className="col-span-5 truncate font-medium flex items-center gap-1">
+                        {t.deleted && <AlertTriangle className="h-3 w-3 text-amber-500 shrink-0" />}
+                        <span className="truncate">{t.name}</span>
+                      </div>
+                      <div className="col-span-1 text-right tabular-nums">{t.sent}</div>
+                      <div className="col-span-2 text-right tabular-nums">
+                        <span style={{ color: CHART.opened }}>{openRate}%</span>
+                      </div>
+                      <div className="col-span-2 text-right tabular-nums">
+                        <span style={{ color: CHART.success }}>{replyRate}%</span>
+                      </div>
+                      <div className="col-span-2 text-right tabular-nums">
+                        <span style={{ color: bounceRate > 5 ? CHART.failed : "hsl(var(--muted-foreground))" }}>{bounceRate}%</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </CardContent>
         </Card>
 
         <Card className="border-border/60 shadow-sm">
-          <CardHeader className="p-4 pb-2">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <Clock className="h-4 w-4 text-primary" /> Response Heatmap
-              <span className="text-[10px] text-muted-foreground font-normal">{heatmap.total} responses</span>
+          <CardHeader
+            className="p-3 pb-1.5 cursor-pointer select-none hover:bg-muted/30 transition-colors"
+            onClick={() => setBreakdownsOpen(o => !o)}
+          >
+            <CardTitle className="text-sm font-medium flex items-center justify-between gap-2">
+              <span className="flex items-center gap-2 min-w-0">
+                <Filter className="h-3.5 w-3.5 text-primary" />
+                <span>Breakdowns</span>
+                <span className="text-[11px] font-normal text-muted-foreground truncate">· {breakdownsSummary}</span>
+              </span>
+              <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${breakdownsOpen ? "rotate-180" : ""}`} />
             </CardTitle>
           </CardHeader>
-          <CardContent className="p-4 pt-2">
-            {heatmap.total === 0 ? (
-              <EmptyHint icon={Clock} message="Responses will appear here grouped by day & time" />
-            ) : heatmap.total < 5 ? (
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={dayBars} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis dataKey="day" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                  <YAxis allowDecimals={false} tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                  <RechartsTooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid hsl(var(--border))", background: "hsl(var(--background))" }} />
-                  <Bar dataKey="responses" fill={CHART.primary} radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <div>
-                <div className="grid gap-1" style={{ gridTemplateColumns: `60px repeat(${TIME_BUCKETS.length}, minmax(0, 1fr))` }}>
-                  <div></div>
-                  {TIME_BUCKETS.map(b => (
-                    <div key={b.label} className="text-[10px] text-muted-foreground text-center font-medium">{b.label}</div>
-                  ))}
-                  {DAY_NAMES.map((day, dIdx) => (
-                    <div key={`row-${day}`} className="contents">
-                      <div className="text-[10px] text-muted-foreground flex items-center font-medium">{day}</div>
-                      {TIME_BUCKETS.map((_, bIdx) => {
-                        const v = heatmap.grid[dIdx][bIdx];
-                        const intensity = heatmap.max > 0 ? v / heatmap.max : 0;
-                        return (
-                          <TooltipProvider key={`${day}-${bIdx}`} delayDuration={120}>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <div
-                                  className="aspect-square rounded-md border border-border/30 flex items-center justify-center text-[10px] font-medium tabular-nums transition-colors cursor-default"
-                                  style={{
-                                    background: v === 0 ? "hsl(var(--muted) / 0.4)" : `hsl(var(--primary) / ${0.15 + intensity * 0.75})`,
-                                    color: intensity > 0.55 ? "hsl(var(--primary-foreground))" : "hsl(var(--foreground))",
-                                  }}
-                                >
-                                  {v > 0 ? v : ""}
-                                </div>
-                              </TooltipTrigger>
-                              <TooltipContent className="text-xs">{day} {TIME_BUCKETS[bIdx].label}: {v} response{v === 1 ? "" : "s"}</TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
-                        );
-                      })}
-                    </div>
-                  ))}
-                </div>
-                <div className="flex items-center justify-end gap-1 mt-3 text-[10px] text-muted-foreground">
-                  Less
-                  {[0.2, 0.4, 0.6, 0.8, 1].map(o => (
-                    <div key={o} className="w-3 h-3 rounded-sm border border-border/30" style={{ background: `hsl(var(--primary) / ${o})` }} />
-                  ))}
-                  More
-                </div>
-              </div>
-            )}
-          </CardContent>
+          {breakdownsOpen && (
+            <CardContent className="p-3 pt-1">
+              <Tabs defaultValue="region">
+                <TabsList className="h-7">
+                  <TabsTrigger value="region" className="h-6 text-xs">By Region</TabsTrigger>
+                  <TabsTrigger value="industry" className="h-6 text-xs">By Industry</TabsTrigger>
+                  <TabsTrigger value="accounts" className="h-6 text-xs">Top Accounts</TabsTrigger>
+                </TabsList>
+                <TabsContent value="region" className="mt-2">
+                  <BreakdownTable
+                    rows={breakdownByRegion.map(r => ({ key: r.name, name: r.name, primary: r.contacts, secondary: r.replies }))}
+                    primaryLabel="Contacts" secondaryLabel="Replies" emptyHint="No region data on linked accounts"
+                    onRowClick={onDrilldown ? () => onDrilldown({ tab: "setup", section: "audience" }) : undefined}
+                  />
+                </TabsContent>
+                <TabsContent value="industry" className="mt-2">
+                  <BreakdownTable
+                    rows={breakdownByIndustry.map(r => ({ key: r.name, name: r.name, primary: r.contacts, secondary: r.replies }))}
+                    primaryLabel="Contacts" secondaryLabel="Replies" emptyHint="No industry data on linked accounts"
+                    onRowClick={onDrilldown ? () => onDrilldown({ tab: "setup", section: "audience" }) : undefined}
+                  />
+                </TabsContent>
+                <TabsContent value="accounts" className="mt-2">
+                  <BreakdownTable
+                    rows={breakdownByAccount.map(r => ({ key: r.name, name: r.name, primary: r.touches, secondary: r.replies, accountId: r.id }))}
+                    primaryLabel="Touchpoints" secondaryLabel="Replies" emptyHint="No outreach yet"
+                    onRowClick={(row) => row.accountId ? navigate(`/accounts/${row.accountId}`) : undefined}
+                  />
+                </TabsContent>
+              </Tabs>
+            </CardContent>
+          )}
         </Card>
       </div>
 
-      {/* ZONE E — Breakdowns */}
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="p-4 pb-2">
-          <CardTitle className="text-sm font-medium">Breakdowns</CardTitle>
-        </CardHeader>
-        <CardContent className="p-4 pt-2">
-          <Tabs defaultValue="region">
-            <TabsList className="h-8">
-              <TabsTrigger value="region" className="h-7 text-xs">By Region</TabsTrigger>
-              <TabsTrigger value="industry" className="h-7 text-xs">By Industry</TabsTrigger>
-              <TabsTrigger value="accounts" className="h-7 text-xs">Top Accounts</TabsTrigger>
-            </TabsList>
-            <TabsContent value="region" className="mt-3">
-              <BreakdownTable rows={breakdownByRegion.map(r => ({ name: r.name, primary: r.contacts, secondary: r.replies }))}
-                primaryLabel="Contacts" secondaryLabel="Replies" emptyHint="No region data on linked accounts" />
-            </TabsContent>
-            <TabsContent value="industry" className="mt-3">
-              <BreakdownTable rows={breakdownByIndustry.map(r => ({ name: r.name, primary: r.contacts, secondary: r.replies }))}
-                primaryLabel="Contacts" secondaryLabel="Replies" emptyHint="No industry data on linked accounts" />
-            </TabsContent>
-            <TabsContent value="accounts" className="mt-3">
-              <BreakdownTable rows={breakdownByAccount.map(r => ({ name: r.name, primary: r.touches, secondary: r.replies }))}
-                primaryLabel="Touchpoints" secondaryLabel="Replies" emptyHint="No outreach yet" />
-            </TabsContent>
-          </Tabs>
-        </CardContent>
-      </Card>
-
-      {/* ZONE E2 — Send-time histogram */}
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="p-4 pb-2">
-          <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Clock className="h-4 w-4 text-primary" /> Best Send Time
-            <span className="text-[10px] text-muted-foreground font-normal">
-              {sendTimeBuckets.reduce((s, b) => s + b.sends, 0)} sends
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-4 pt-2">
-          {sendTimeBuckets.every(b => b.sends === 0) ? (
-            <EmptyHint icon={Clock} message="No provider-sent emails yet" />
-          ) : (
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={sendTimeBuckets} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                <XAxis dataKey="label" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                <YAxis allowDecimals={false} tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                <RechartsTooltip
-                  contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid hsl(var(--border))", background: "hsl(var(--background))" }}
-                  formatter={(v: number, n: string) => [v, n === "sends" ? "Sends" : "Replied threads"]}
-                />
-                <Legend iconSize={8} formatter={(v: string) => <span className="text-xs text-muted-foreground">{v === "sends" ? "Sends" : "Replied"}</span>} />
-                <Bar dataKey="sends" fill={CHART.primary} radius={[4, 4, 0, 0]} />
-                <Bar dataKey="replies" fill={CHART.success} radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* ZONE E3 — Template performance */}
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="p-4 pb-2">
-          <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Mail className="h-4 w-4 text-primary" /> Template Performance
-            <span className="text-[10px] text-muted-foreground font-normal">
-              {templatePerf.length} template{templatePerf.length === 1 ? "" : "s"} used
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-4 pt-2">
-          {templatePerf.length === 0 ? (
-            <EmptyHint icon={Mail} message="No template-attributed sends yet" />
-          ) : (
-            <div className="space-y-1">
-              <div className="grid grid-cols-12 gap-2 text-[10px] text-muted-foreground uppercase tracking-wide font-medium px-1">
-                <div className="col-span-5">Template</div>
-                <div className="col-span-1 text-right">Sent</div>
-                <div className="col-span-2 text-right">Open rate</div>
-                <div className="col-span-2 text-right">Reply rate</div>
-                <div className="col-span-2 text-right">Bounce rate</div>
-              </div>
-              {templatePerf.map(t => {
-                const openRate = pct(t.opened, t.sent);
-                const replyRate = pct(t.replied, t.sent);
-                const bounceRate = pct(t.bounced, t.sent);
-                return (
-                  <div key={t.id} className="grid grid-cols-12 gap-2 items-center text-xs px-1 py-1 rounded hover:bg-muted/30">
-                    <div className="col-span-5 truncate font-medium" title={t.name}>{t.name}</div>
-                    <div className="col-span-1 text-right tabular-nums">{t.sent}</div>
-                    <div className="col-span-2 text-right tabular-nums">
-                      <span style={{ color: CHART.opened }}>{openRate}%</span>
-                      <span className="text-muted-foreground"> ({t.opened})</span>
-                    </div>
-                    <div className="col-span-2 text-right tabular-nums">
-                      <span style={{ color: CHART.success }}>{replyRate}%</span>
-                      <span className="text-muted-foreground"> ({t.replied})</span>
-                    </div>
-                    <div className="col-span-2 text-right tabular-nums">
-                      <span style={{ color: bounceRate > 5 ? CHART.failed : "hsl(var(--muted-foreground))" }}>
-                        {bounceRate}%
-                      </span>
-                      <span className="text-muted-foreground"> ({t.bounced})</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* ZONE F — A/B variant performance */}
-      <VariantPerformancePanel campaignId={campaignId} />
-
-      {/* ZONE G — Conversion attribution */}
-      <CampaignAttributionPanel campaignId={campaignId} />
     </div>
   );
 }
 
-function BreakdownTable({ rows, primaryLabel, secondaryLabel, emptyHint }: {
-  rows: { name: string; primary: number; secondary: number }[];
+interface BreakdownRow { key: string; name: string; primary: number; secondary: number; accountId?: string | null }
+
+function BreakdownTable({ rows, primaryLabel, secondaryLabel, emptyHint, onRowClick }: {
+  rows: BreakdownRow[];
   primaryLabel: string;
   secondaryLabel: string;
   emptyHint: string;
+  onRowClick?: (row: BreakdownRow) => void;
 }) {
   if (rows.length === 0) return <EmptyHint icon={Filter} message={emptyHint} />;
   const max = Math.max(...rows.map(r => r.primary), 1);
   return (
-    <div className="space-y-2">
+    <div className="space-y-1">
       <div className="grid grid-cols-12 gap-2 text-[10px] text-muted-foreground uppercase tracking-wide font-medium px-1">
         <div className="col-span-5">Name</div>
         <div className="col-span-5">{primaryLabel}</div>
         <div className="col-span-2 text-right">{secondaryLabel}</div>
       </div>
-      {rows.map(r => (
-        <div key={r.name} className="grid grid-cols-12 gap-2 items-center text-xs px-1">
-          <div className="col-span-5 truncate font-medium" title={r.name}>{r.name}</div>
-          <div className="col-span-5 flex items-center gap-2">
-            <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
-              <div className="h-full rounded-full" style={{ width: `${pct(r.primary, max)}%`, background: CHART.primary }} />
+      {rows.map(r => {
+        const clickable = !!onRowClick;
+        return (
+          <div
+            key={r.key}
+            className={`grid grid-cols-12 gap-2 items-center text-xs px-1 py-1 rounded ${clickable ? "cursor-pointer hover:bg-muted/30" : ""}`}
+            onClick={clickable ? () => onRowClick?.(r) : undefined}
+          >
+            <div className="col-span-5 truncate font-medium" title={r.name}>{r.name}</div>
+            <div className="col-span-5 flex items-center gap-2">
+              <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                <div className="h-full rounded-full" style={{ width: `${pct(r.primary, max)}%`, background: CHART.primary }} />
+              </div>
+              <span className="tabular-nums w-8 text-right">{r.primary}</span>
             </div>
-            <span className="tabular-nums w-8 text-right">{r.primary}</span>
+            <div className="col-span-2 text-right tabular-nums text-muted-foreground">{r.secondary}</div>
           </div>
-          <div className="col-span-2 text-right tabular-nums text-muted-foreground">{r.secondary}</div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

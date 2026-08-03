@@ -61,16 +61,16 @@ export async function buildUserLookupMap(): Promise<UserResolverResult> {
     
     // Also query the profiles table for additional display names
     const { data: profiles, error: profilesError } = await supabase
-      .from('profiles')
+      .from('profiles_public' as any)
       .select('id, full_name, "Email ID"');
     
     if (!profilesError && profiles) {
       console.log('UserNameResolver: Fetched', profiles.length, 'profiles');
       
-      for (const profile of profiles) {
-        const userId = profile.id;
-        const fullName = profile.full_name || '';
-        const email = profile['Email ID']?.toLowerCase() || '';
+      for (const profile of profiles as any[]) {
+        const userId = (profile as any).id;
+        const fullName = (profile as any).full_name || '';
+        const email = (profile as any)['Email ID']?.toLowerCase() || '';
         
         // Add keys (won't overwrite if already exist)
         addUserKeys(userMap, userId, fullName, email);
@@ -175,26 +175,15 @@ export function resolveUserName(
     return userMap[nameWithDots];
   }
   
-  // Try matching name parts (first name, last name)
-  const nameParts = normalizedName.split(/\s+/);
-  for (const [key, uuid] of Object.entries(userMap)) {
-    const keyParts = key.split(/[\s.]+/);
-    
-    // Check if all name parts are found in the key
-    const allPartsMatch = nameParts.every(part => 
-      keyParts.some(keyPart => keyPart.includes(part) || part.includes(keyPart))
-    );
-    
-    if (allPartsMatch && nameParts.length >= 2) {
-      console.log(`UserNameResolver: Resolved "${name}" to UUID (partial match with "${key}")`);
-      return uuid;
-    }
-  }
-  
-  // No match found - use fallback
-  console.log(`UserNameResolver: Could not resolve "${name}", using fallback user`);
+  // Non-deterministic substring matching removed: a CSV owner "Jo Smith"
+  // used to assign the record to whichever similarly-named user iterated
+  // first. If the name doesn't match a full record exactly (or via the
+  // dot-form above), fall back to the caller — leaving the owner unset when
+  // there is no fallback is safer than silently picking the wrong person.
+  console.log(`UserNameResolver: Could not resolve "${name}" exactly, using fallback user`);
   return fallbackUserId;
 }
+
 
 /**
  * Fields that contain user references (names that need to be converted to UUIDs)

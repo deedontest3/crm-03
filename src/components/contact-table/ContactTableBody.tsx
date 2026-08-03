@@ -1,14 +1,16 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { MoreHorizontal, Pencil, Trash2, ArrowUpDown, ArrowUp, ArrowDown, ListTodo } from "lucide-react";
+import { MoreHorizontal, Pencil, Trash2, ArrowUp, ArrowDown } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { useUserDisplayNames } from "@/hooks/useUserDisplayNames";
 import { ContactColumnConfig } from "../ContactColumnCustomizer";
 import { AccountViewModal } from "../AccountViewModal";
+import { LinkedDealsDialog } from "../LinkedDealsDialog";
 import { cn } from "@/lib/utils";
 import { useContactColumnWidths } from "@/hooks/useContactColumnWidths";
+import { AppLoader } from "@/components/ui/loader";
 
 interface Contact {
   id: string;
@@ -19,15 +21,12 @@ interface Contact {
   phone_no?: string;
   region?: string;
   contact_owner?: string;
-  lead_status?: string;
   created_by?: string;
   linkedin?: string;
   website?: string;
   contact_source?: string;
   industry?: string;
   description?: string;
-  mobile_no?: string;
-  city?: string;
   last_activity_time?: string;
   [key: string]: any;
 }
@@ -45,17 +44,10 @@ interface ContactTableBodyProps {
   sortField: string | null;
   sortDirection: 'asc' | 'desc';
   onSort: (field: string) => void;
-  onAddActionItem?: (contact: Contact) => void;
+  dealCounts?: Record<string, number>;
+  emptyStateMessage?: string;
 }
 
-const getLeadStatusDotColor = (status: string | undefined) => {
-  switch (status) {
-    case 'New': return 'bg-blue-500';
-    case 'Contacted': return 'bg-yellow-500';
-    case 'Converted': return 'bg-green-500';
-    default: return 'bg-gray-400';
-  }
-};
 
 export const ContactTableBody = ({
   loading,
@@ -70,98 +62,104 @@ export const ContactTableBody = ({
   sortField,
   sortDirection,
   onSort,
-  onAddActionItem
+  dealCounts = {},
+  emptyStateMessage,
 }: ContactTableBodyProps) => {
-  const [viewAccountName, setViewAccountName] = useState<string | null>(null);
+  const [viewAccount, setViewAccount] = useState<{ id: string | null; name: string | null }>({ id: null, name: null });
   const [showAccountModal, setShowAccountModal] = useState(false);
+  const [linkedDealsContact, setLinkedDealsContact] = useState<{ id: string; name: string } | null>(null);
+  const [showLinkedDealsDialog, setShowLinkedDealsDialog] = useState(false);
   const { columnWidths, updateColumnWidth } = useContactColumnWidths();
 
-  // Column resize state
+  // Column resize state — use refs for start values so the window listeners
+  // don't have to be torn down and re-attached on every mousemove tick.
   const [isResizing, setIsResizing] = useState<string | null>(null);
-  const [startX, setStartX] = useState(0);
-  const [startWidth, setStartWidth] = useState(0);
+  const resizingRef = useRef<string | null>(null);
+  const startXRef = useRef(0);
+  const startWidthRef = useRef(0);
 
-  // Column resize handlers
   const handleMouseDown = (e: React.MouseEvent, field: string) => {
+    if (field === 'linked_deals') return;
+    resizingRef.current = field;
     setIsResizing(field);
-    setStartX(e.clientX);
-    setStartWidth(columnWidths[field] || 120);
+    startXRef.current = e.clientX;
+    startWidthRef.current = columnWidths[field] || 120;
     e.preventDefault();
     e.stopPropagation();
   };
 
-  const handleMouseMove = (e: MouseEvent) => {
-    if (!isResizing) return;
-    const deltaX = e.clientX - startX;
-    const newWidth = Math.max(60, startWidth + deltaX);
-    updateColumnWidth(isResizing, newWidth);
-  };
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    const field = resizingRef.current;
+    if (!field) return;
+    const deltaX = e.clientX - startXRef.current;
+    const newWidth = Math.max(60, startWidthRef.current + deltaX);
+    updateColumnWidth(field, newWidth);
+  }, [updateColumnWidth]);
 
-  const handleMouseUp = () => {
+  const handleMouseUp = useCallback(() => {
+    resizingRef.current = null;
     setIsResizing(null);
-  };
+  }, []);
 
   useEffect(() => {
-    if (isResizing) {
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('mouseup', handleMouseUp);
-      return () => {
-        document.removeEventListener('mousemove', handleMouseMove);
-        document.removeEventListener('mouseup', handleMouseUp);
-      };
-    }
-  }, [isResizing, startX, startWidth]);
+    if (!isResizing) return;
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizing, handleMouseMove, handleMouseUp]);
 
-  const contactOwnerIds = [...new Set(pageContacts.map(c => c.contact_owner).filter(Boolean))];
-  const createdByIds = [...new Set(pageContacts.map(c => c.created_by).filter(Boolean))];
-  const allUserIds = [...new Set([...contactOwnerIds, ...createdByIds])];
+  const contactOwnerIds = useMemo(
+    () => [...new Set(pageContacts.map(c => c.contact_owner).filter(Boolean))] as string[],
+    [pageContacts]
+  );
+  const createdByIds = useMemo(
+    () => [...new Set(pageContacts.map(c => c.created_by).filter(Boolean))] as string[],
+    [pageContacts]
+  );
+  const allUserIds = useMemo(
+    () => [...new Set([...contactOwnerIds, ...createdByIds])],
+    [contactOwnerIds, createdByIds]
+  );
   const { displayNames } = useUserDisplayNames(allUserIds);
 
+  // Select-all now covers every visible row on the current page (was capped at 50).
   const handleSelectAll = (checked: boolean) => {
-    if (checked) {
-      setSelectedContacts(pageContacts.slice(0, 50).map(c => c.id));
-    } else {
-      setSelectedContacts([]);
-    }
+    if (checked) setSelectedContacts(pageContacts.map(c => c.id));
+    else setSelectedContacts([]);
   };
 
   const handleSelectContact = (contactId: string, checked: boolean) => {
-    if (checked) {
-      setSelectedContacts(prev => [...prev, contactId]);
-    } else {
-      setSelectedContacts(prev => prev.filter(id => id !== contactId));
-    }
+    if (checked) setSelectedContacts(prev => [...prev, contactId]);
+    else setSelectedContacts(prev => prev.filter(id => id !== contactId));
   };
 
-  const handleAccountClick = (companyName: string) => {
-    setViewAccountName(companyName);
+  const handleAccountClick = (contact: Contact) => {
+    setViewAccount({ id: (contact as any).account_id || null, name: contact.company_name || null });
     setShowAccountModal(true);
   };
 
   const getSortIcon = (field: string) => {
-    if (sortField !== field) return <ArrowUpDown className="w-3 h-3 text-muted-foreground/60" />;
+    if (sortField !== field) return null;
     return sortDirection === 'asc' 
       ? <ArrowUp className="w-3 h-3 text-foreground" /> 
       : <ArrowDown className="w-3 h-3 text-foreground" />;
   };
 
+  const displayUser = (id: string | undefined | null) => {
+    if (!id) return '-';
+    const name = displayNames[id];
+    if (!name) return 'Loading…';
+    if (name === 'Unknown User') return 'Unknown';
+    return name;
+  };
+
   const getDisplayValue = (contact: Contact, columnField: string) => {
-    if (columnField === 'contact_owner') {
-      if (!contact.contact_owner) return '-';
-      const displayName = displayNames[contact.contact_owner];
-      return displayName && displayName !== "Unknown User" ? displayName : (displayName === "Unknown User" ? "Unknown User" : "Loading...");
-    } else if (columnField === 'created_by') {
-      if (!contact.created_by) return '-';
-      const displayName = displayNames[contact.created_by];
-      return displayName && displayName !== "Unknown User" ? displayName : (displayName === "Unknown User" ? "Unknown User" : "Loading...");
-    } else if (columnField === 'lead_status' && contact.lead_status) {
-      return (
-        <div className="flex items-center gap-1.5">
-          <span className={cn('w-2 h-2 rounded-full flex-shrink-0', getLeadStatusDotColor(contact.lead_status))} />
-          <span>{contact.lead_status}</span>
-        </div>
-      );
-    } else if (columnField === 'last_activity_time' && contact.last_activity_time) {
+    if (columnField === 'contact_owner') return displayUser(contact.contact_owner);
+    else if (columnField === 'created_by') return displayUser(contact.created_by);
+    else if (columnField === 'last_activity_time' && contact.last_activity_time) {
       try {
         const date = new Date(contact.last_activity_time);
         return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -169,10 +167,25 @@ export const ContactTableBody = ({
         return contact.last_activity_time;
       }
     }
-    return contact[columnField as keyof Contact] || '-';
+    // Preserve numeric 0 / false — only treat null/undefined/'' as missing.
+    const v = contact[columnField as keyof Contact];
+    if (v === null || v === undefined || v === '') return '-';
+    return v as any;
   };
 
   const renderCellContent = (contact: Contact, column: ContactColumnConfig) => {
+    if (column.field === 'linked_deals') {
+      const count = dealCounts[contact.id] || 0;
+      return (
+        <button
+          onClick={() => { setLinkedDealsContact({ id: contact.id, name: contact.contact_name }); setShowLinkedDealsDialog(true); }}
+          className="inline-flex items-center justify-center min-w-[2rem] px-2 py-0.5 rounded-full text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer"
+          title={`View ${count} linked deal${count !== 1 ? 's' : ''}`}
+        >
+          {count}
+        </button>
+      );
+    }
     if (column.field === 'contact_name') {
       return (
         <button
@@ -186,10 +199,12 @@ export const ContactTableBody = ({
 
     if (column.field === 'company_name') {
       const name = contact.company_name;
-      if (!name) return <span>-</span>;
+      if (!name) return <span className="text-muted-foreground">-</span>;
+      const hasAccount = !!(contact as any).account_id;
+      if (!hasAccount) return <span title="No linked account">{name}</span>;
       return (
         <button
-          onClick={() => handleAccountClick(name)}
+          onClick={() => handleAccountClick(contact)}
           className="text-[#2e538e] hover:underline font-normal text-left"
         >
           {name}
@@ -209,11 +224,8 @@ export const ContactTableBody = ({
       <Table>
         <TableBody>
           <TableRow>
-            <TableCell colSpan={visibleColumns.length + 2} className="text-center py-8">
-              <div className="flex items-center justify-center">
-                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mr-2"></div>
-                Loading contacts...
-              </div>
+            <TableCell colSpan={visibleColumns.length + 2} className="p-0 h-[60vh]">
+              <AppLoader variant="panel" label="Loading contacts…" />
             </TableCell>
           </TableRow>
         </TableBody>
@@ -228,7 +240,7 @@ export const ContactTableBody = ({
           <TableRow>
             <TableCell colSpan={visibleColumns.length + 2} className="text-center py-8">
               <div className="flex flex-col items-center gap-2">
-                <p className="text-muted-foreground">No contacts found</p>
+                <p className="text-muted-foreground">{emptyStateMessage || 'No contacts found'}</p>
                 {searchTerm && <p className="text-sm text-muted-foreground">Try adjusting your search terms</p>}
               </div>
             </TableCell>
@@ -247,14 +259,16 @@ export const ContactTableBody = ({
               <TableHead className="w-12 text-center font-bold text-foreground bg-muted/80 py-3">
                 <div className="flex justify-center">
                   <Checkbox
-                    checked={selectedContacts.length > 0 && selectedContacts.length === Math.min(pageContacts.length, 50)}
+                    checked={pageContacts.length > 0 && selectedContacts.length === pageContacts.length}
                     onCheckedChange={handleSelectAll}
+                    aria-label="Select all on this page"
                   />
                 </div>
               </TableHead>
               {visibleColumns.map((column) => (
                 <TableHead 
                   key={column.field} 
+                  aria-sort={sortField === column.field ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
                   className={cn(
                     "relative text-left font-bold text-foreground bg-muted/80 px-4 py-3",
                     sortField === column.field && "bg-accent"
@@ -265,14 +279,18 @@ export const ContactTableBody = ({
                     variant="ghost"
                     className="h-auto p-0 font-bold hover:bg-transparent w-full justify-start text-foreground"
                     onClick={() => onSort(column.field)}
+                    title={column.field === 'linked_deals' ? 'Sorted within the current page only' : undefined}
                   >
                     <div className="flex items-center gap-2">
                       {column.label}
                       {getSortIcon(column.field)}
                     </div>
                   </Button>
-                  {/* Resize handle */}
+                  {/* Resize handle — not a tab stop, mouse-only. */}
                   <div 
+                    role="separator"
+                    aria-label={`Resize ${column.label} column`}
+                    tabIndex={-1}
                     className="absolute right-0 top-0 w-1 h-full cursor-col-resize hover:bg-primary/40 active:bg-primary/60" 
                     onMouseDown={e => handleMouseDown(e, column.field)} 
                   />
@@ -282,7 +300,14 @@ export const ContactTableBody = ({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {pageContacts.map((contact) => (
+            {(sortField === 'linked_deals'
+              ? [...pageContacts].sort((a, b) => {
+                  const ca = dealCounts[a.id] || 0;
+                  const cb = dealCounts[b.id] || 0;
+                  return sortDirection === 'asc' ? ca - cb : cb - ca;
+                })
+              : pageContacts
+            ).map((contact) => (
               <TableRow key={contact.id} className="group hover:bg-muted/30">
                 <TableCell className="text-center px-4 py-3">
                   <div className="flex justify-center">
@@ -304,7 +329,7 @@ export const ContactTableBody = ({
                   </TableCell>
                 ))}
                 <TableCell className="py-3 px-2">
-                  <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-150 flex justify-center">
+                  <div className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-150 flex justify-center">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon" className="h-8 w-8 p-0">
@@ -316,12 +341,6 @@ export const ContactTableBody = ({
                           <Pencil className="h-4 w-4 mr-2" />
                           Edit
                         </DropdownMenuItem>
-                        {onAddActionItem && (
-                          <DropdownMenuItem onClick={() => onAddActionItem(contact)}>
-                            <ListTodo className="h-4 w-4 mr-2" />
-                            Add Action Item
-                          </DropdownMenuItem>
-                        )}
                         <DropdownMenuSeparator />
                         <DropdownMenuItem onClick={() => onDelete(contact.id)} className="text-destructive focus:text-destructive">
                           <Trash2 className="h-4 w-4 mr-2" />
@@ -340,7 +359,13 @@ export const ContactTableBody = ({
       <AccountViewModal
         open={showAccountModal}
         onOpenChange={setShowAccountModal}
-        accountName={viewAccountName}
+        accountId={viewAccount.id}
+        accountName={viewAccount.name}
+      />
+      <LinkedDealsDialog
+        open={showLinkedDealsDialog}
+        onOpenChange={setShowLinkedDealsDialog}
+        target={linkedDealsContact ? { kind: 'contact', id: linkedDealsContact.id, name: linkedDealsContact.name } : null}
       />
     </>
   );
