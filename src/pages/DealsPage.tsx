@@ -219,8 +219,12 @@ const DealsPage = () => {
 
       if (error) {
         console.error("Archive error:", error, JSON.stringify(error));
+        const isPermission =
+          error.code === '42501' ||
+          error.code === 'PGRST301' ||
+          /row-level security|permission|not authenticated/i.test(error.message || '');
         toast({
-          title: "Error",
+          title: isPermission ? "Permission Denied" : "Couldn't archive deals",
           description: error.message || "Failed to archive deals",
           variant: "destructive",
         });
@@ -247,9 +251,14 @@ const DealsPage = () => {
       }
 
       if (notArchived.length > 0) {
+        const names = deals
+          .filter(d => notArchived.includes(d.id))
+          .map(d => d.project_name || d.deal_name || d.id)
+          .slice(0, 3)
+          .join(', ');
         toast({
-          title: "Permission Denied",
-          description: `You don't have permission to archive ${notArchived.length} deal(s).`,
+          title: "Some deals were skipped",
+          description: `${notArchived.length} deal(s) were not archived${names ? ` (${names}${notArchived.length > 3 ? '…' : ''})` : ''} — they were already archived or you don't own them.`,
           variant: "destructive",
         });
       }

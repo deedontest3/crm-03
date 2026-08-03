@@ -130,30 +130,51 @@ const Index = () => {
 
   const handleDeleteDeals = async (dealIds: string[]) => {
     try {
-      const { error } = await supabase
-        .from('deals')
-        .update({
-          archived_at: new Date().toISOString(),
-          archived_by: user?.id ?? null,
-          modified_at: new Date().toISOString(),
-          modified_by: user?.id ?? null,
-        } as any)
-        .in('id', dealIds);
-
-      if (error) throw error;
-
-      setDeals(prev => prev.filter(deal => !dealIds.includes(deal.id)));
-      invalidateDealCaches(queryClient);
-
-
-      toast({
-        title: "Moved to Archive",
-        description: `${dealIds.length} deal(s) archived`,
+      // Same server-side archive path as the Deals page: admins/super admins can
+      // archive any deal, everyone else only their own.
+      const { data, error } = await (supabase as any).rpc('archive_deals', {
+        p_ids: dealIds,
+        p_reason: null,
       });
-    } catch (error) {
+
+      if (error) {
+        console.error("Archive error:", error);
+        const isPermission =
+          error.code === '42501' ||
+          error.code === 'PGRST301' ||
+          /row-level security|permission|not authenticated/i.test(error.message || '');
+        toast({
+          title: isPermission ? "Permission Denied" : "Couldn't archive deals",
+          description: error.message || "Failed to archive deals",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const archivedIds: string[] = ((data as { id: string }[] | null) || []).map(r => r.id);
+      const notArchived = dealIds.filter(id => !archivedIds.includes(id));
+
+      if (archivedIds.length > 0) {
+        setDeals(prev => prev.filter(deal => !archivedIds.includes(deal.id)));
+        invalidateDealCaches(queryClient);
+        toast({
+          title: "Moved to Archive",
+          description: `${archivedIds.length} deal(s) archived`,
+        });
+      }
+
+      if (notArchived.length > 0) {
+        toast({
+          title: "Some deals were skipped",
+          description: `${notArchived.length} deal(s) were not archived — they were already archived or you don't own them.`,
+          variant: "destructive",
+        });
+      }
+    } catch (error: any) {
+      console.error("Unexpected archive error:", error);
       toast({
         title: "Error",
-        description: "Failed to archive deals",
+        description: error?.message || "Failed to archive deals",
         variant: "destructive",
       });
     }
